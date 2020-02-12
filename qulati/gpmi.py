@@ -516,7 +516,7 @@ class AbstractModel(ABC):
         nugget = 1e-10
         while True:
             try:
-                print("  Add nugget {:1.0e} to posterior var diagonal for stability".format(nugget))
+                print("  (adding nugget {:1.0e} to posterior var diagonal for stability)".format(nugget))
                 np.fill_diagonal(self.post_var, np.diag(self.post_var) + nugget)
                 #print("  Cholesky decomp")
                 L = np.linalg.cholesky(self.post_var)
@@ -565,7 +565,7 @@ class AbstractModel(ABC):
 
                 samples = np.random.multivariate_normal(mean, var, size = 2000)
 
-                mag_grad = np.linalg.norm(samples, axis = 1)
+                mag_grad = np.linalg.norm(self.unscale(samples, std = True), axis = 1)
 
                 p = np.percentile(mag_grad, [9, 25, 50, 75, 91])
                 m, s = np.mean(mag_grad), np.std(mag_grad)
@@ -583,7 +583,7 @@ class AbstractModel(ABC):
                     plt.axvline(m - 2*s, color = "red", linestyle = "--")
                     plt.show()
 
-        return idx, mag_stats
+        return mag_stats
     #}}}
 
     #{{{screePlot

@@ -147,8 +147,23 @@ class AbstractModel(ABC):
         return self.meanFunction, self.grad_meanFunction
 
     
+    # NOTE: should be an abstract method that is implemented elsewhere
+    def s2kernel(self, s2i , s2j, l, grad = False):
+        """Covariance between s2 values: fixed as RBF kernel for now."""
+           
+        dists = cdist(s2i[:,None]/l, s2j[:,None]/l, "sqeuclidean") # last HP is lengthscale for S2
+        Ks2 = np.exp(-dists)
+
+        # gradient wrt s2_lengthscale
+        if grad:
+            gradKs2 = 2.0*(dists/l)*Ks2
+            return Ks2, gradKs2
+        else:
+            return Ks2, None
+
+    
     # {{{ data handling including scalings
-    def set_data(self, y, yerr, vertex, s2 = None):
+    def set_data(self, y, yerr, vertex, grady, gradyerr, gradvertex, s2 = None, grads2 = None):
         """Set data for interpolation, scaled and centred."""
 
         # set mean and stdev of y
@@ -156,9 +171,19 @@ class AbstractModel(ABC):
 
         self.y = self.scale(y, std = False)
         self.yerr = self.scale(yerr, std = True)
+        self.grady = self.scale(grady, std = True) # careful not to subtract observation mean from observation gradients!
+        self.gradyerr = self.scale(gradyerr, std = True)
 
         self.vertex = vertex
+        self.gradvertex = gradvertex
+
         self.s2 = s2
+        self.grads2 = grads2
+
+        print(self.grady)
+        print(self.gradyerr)
+        print(self.gradvertex)
+        print(self.grads2)
 
         self.reset()
 
@@ -180,34 +205,114 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ covariance matrix
-    def kernelMatrix(self, HP, nugget, vertex, s2, yerr, grad = False):
+    # NOTE: this routine is going to be used exclusively for the covariance between observations
+    # NOTE: nugget will no longer need to be passed in separately
+    def trainingCovar(self, HP, nugget, grad = False):
         """Returns the kernel matrix between all supplied vertex locations.
         
            Arguments:
            HP -- hyperparameters
            nugget -- nugget to add to diagonal
-           s2 -- values of s2 for each row
-           yerr -- values of yerr for each row
 
            Keyword arguments:
            grad -- whether to return the matrix kernel derivatives wrt hyperparameters
 
            NOTES:
            * always builds a square matrix
-           * even if HP includes the nugget value, the nugget value in 'nugget' is used
+           * even if HP includes the nugget value, the nugget value in 'nugget' is used 
         
+           Build the covariance between observations in chunks; x where y observed, gx where dy/dx observed
+           K = | K_x_x   K_x_gx  |
+               | K_gx_x  K_gx_gx |
+
         """
 
-        if grad: grad_cov = np.empty([self.vertex.shape[0], self.vertex.shape[0], HP.shape[0]])
+        # try to loop over the same code to fill out the sub-matrices
+        # NOTE: may need a better way because grad"values" may be none
 
-        res = self.spectralDensity( HP[0], np.sqrt(self.Q), grad = grad )
-        if grad: SD, gradSD = res[0], res[1]
-        else: SD = res
+        if False:
+
+            N, M = self.vertex.shape[0], self.gradvertex.shape[0]
+            cov = np.empty([N + 3*M, N + 3*M])
+            if grad: grad_cov = np.empty([N + 3*M, N + 3*M, HP.shape[0]])
+
+            # NOTE: this easily allows different nuggets to be used for observations and derivative observations
+            # NOTE: could also combine errors and nugget before sending to kernelMatrix, possible.
+
+            # NOTE: it may be possible to do this all in one go by preparing a and b correctly
+            # NOTE: a better order for eigenvector gradients would also be helpful
+
+            # K_x_x
+            a, b = self.V[self.vertex], self.V[self.vertex]
+            a_s2, b_s2 = [self.s2, self.s2] if self.s2 is not None else [None, None] 
+            err = self.yerr
+            K_x_x, grad_K_x_x = self.kernelMatrix(HP, nugget, a, b, a_s2, b_s2, err, grad = grad)
+            cov[0:a.shape[0], 0:b.shape[0]] = K_x_x
+            if grad: grad_cov[0:a.shape[0], 0:b.shape[0], :] = grad_K_x_x
+
+            # K_gx_gx
+            # need transpose to make last dimension the eigenfunction index
+            # then need to stack each spatial derivative up
+            a, b = self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]), self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) 
+
+            # NOTE: may need to repeat 3 times for both s2 and err
+            a_s2, b_s2 = [self.grads2, self.grads2] if self.grads2 is not None else [None, None] 
+            err = self.gradyerr.flatten()
+
+            K_x_x, grad_K_x_x = self.kernelMatrix(HP, nugget, a, b, a_s2, b_s2, err, grad = grad)
+            cov[self.vertex.shape[0]:][:, self.vertex.shape[0]:] = K_x_x
+            if grad: grad_cov[self.vertex.shape[0]:][:, self.vertex.shape[0]:, :] = grad_K_x_x
+
+            # K_x_gx and K_gx_x
+            a, b = self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) 
+            a_s2, b_s2 = [self.s2, self.grads2] if self.grads2 is not None else [None, None] # NOTE: may need to repeat 3 times
+            K_x_x, grad_K_x_x = self.kernelMatrix(HP, 0, a, b, a_s2, b_s2, 0, grad = grad)
+            # make sure nugget gradient on these off diagonals is zero
+            if grad and self.nugget is None: grad_K_x_x[:,:,2] = 0
+            cov[0:self.vertex.shape[0]][:, self.vertex.shape[0]:] = K_x_x
+            cov[self.vertex.shape[0]:][:, 0:self.vertex.shape[0]] = K_x_x.T
+
+            if grad: grad_cov[0:self.vertex.shape[0]][:, self.vertex.shape[0]:, :] = grad_K_x_x
+            if grad: grad_cov[self.vertex.shape[0]:][:, 0:self.vertex.shape[0], :] = np.swapaxes(grad_K_x_x, 0, 1)
+
+        else:
+             
+            a = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
+            if self.s2 is not None:
+                # NOTE: may need to repeat 3 times for both s2 and err for the gradient observations
+                a_s2 = np.hstack([self.s2, self.grads2])
+            else:
+                a_s2 = None
+
+            err = np.hstack([self.yerr, self.gradyerr.flatten()])
+
+            # FIXME: will need different nugget terms for the different observations at some point
+
+            cov, grad_cov = self.kernelMatrix(HP, nugget, a, a, a_s2, a_s2, err, grad = grad)
+
+            # can compare different methods
+            #imShow(cov - cov_test)
+            #imShow(grad_cov - grad_cov_test)
+
+
+        if grad:
+            return cov, grad_cov
+        else:
+            return cov
+
+
+    def kernelMatrix(self, HP, nugget, a, b, a_s2, b_s2, err, grad = False):
+
+        # for storing grad_kernel results
+        if grad: grad_cov = np.empty([a.shape[0], b.shape[0], HP.shape[0]])
+
+        # evaluate the spectral density
+        SD, gradSD = self.spectralDensity( HP[0], np.sqrt(self.Q), grad = grad )
         
         # gradient wrt lengthscale
-        if grad: grad_cov[:,:,0] = HP[1] * self.V[vertex].dot(np.diag(gradSD)).dot(self.V[vertex].T)
+        if grad: grad_cov[:,:,0] = HP[1] * a.dot(np.diag(gradSD)).dot(b.T)
 
-        cov = self.V[vertex].dot(np.diag(SD)).dot(self.V[vertex].T)
+        cov = a.dot(np.diag(SD)).dot(b.T)
 
         # gradient wrt variance
         if grad: grad_cov[:,:,1] = np.copy(cov)
@@ -215,25 +320,25 @@ class AbstractModel(ABC):
         cov = HP[1]*cov
             
         # multiply kernel by RBF(s2)
-        if s2 is not None:
-            dists = pdist(s2/HP[-1], "sqeuclidean") # last HP is lengthscale for S2
-            Ks2 = squareform( np.exp(-dists) )
-            np.fill_diagonal(Ks2, 1.0)
-            cov = np.multiply(cov, Ks2)
+        if self.s2 is not None:
     
-            # gradient wrt s2_lengthscale
-            if grad: grad_cov[:,:,-1] = 2.0*(squareform(dists)/HP[-1])*cov
+            Ks2, gradKs2 = self.s2kernel(a_s2, b_s2, HP[-1], grad = grad) # returns Ks2, gradKs2
+
+            # gradient wrt s2l
+            if grad: grad_cov[:,:,-1] = gradKs2 * cov
+
+            cov = Ks2 * cov
 
         # add nugget to diagonal
-        np.fill_diagonal(cov, np.diag(cov) + nugget + yerr**2)
+        np.fill_diagonal(cov, np.diag(cov) + nugget + err**2)
 
-        # gradient wrt nugget
-        if grad and self.nugget is None: grad_cov[:,:,2] = np.eye(self.vertex.shape[0])
+        # gradient wrt nugget # NOTE: added test to make sure we only add this on K_x_x and K_gx_gx
+        if grad and self.nugget is None and a.shape == b.shape: grad_cov[:,:,2] = np.eye(a.shape[0])
 
         if grad:
             return cov, grad_cov
         else:
-            return cov
+            return cov, None
     #}}}
 
     #{{{ negative loglikelihood
@@ -257,14 +362,16 @@ class AbstractModel(ABC):
         nug = nugget if nugget is not None else HP[2] # if training on the nugget, it is always HP[2]
 
         if grad == True:
-            K, grad_K = self.kernelMatrix(HP, nug, self.vertex, self.s2, self.yerr, grad = grad)
+            K, grad_K = self.trainingCovar(HP, nug, grad = grad)
         else:
-            K = self.kernelMatrix(HP, nug, self.vertex, self.s2, self.yerr, grad = grad)
+            K = self.trainingCovar(HP, nug, grad = grad)
+
+        y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
         try: # more stable
 
             L = linalg.cho_factor(K)        
-            invK_y = linalg.cho_solve(L, self.y)
+            invK_y = linalg.cho_solve(L, y)
             logDetK = 2.0*np.sum(np.log(np.diag(L[0])))        
 
             cho_success = True
@@ -275,7 +382,7 @@ class AbstractModel(ABC):
 
             try:
                 invK = np.linalg.inv(K)
-                invK_y = invK.dot(self.y)
+                invK_y = invK.dot(y)
                 logDetK = np.log( linalg.det(K) )
 
             except np.linalg.linalg.LinAlgError as e:
@@ -286,31 +393,28 @@ class AbstractModel(ABC):
                 print("\n[WARNING]: Ill-conditioned matrix for", HP, ", not fit.\n")
                 return None
                 
-        llh = 0.5 * ( logDetK + ( self.y.T ).dot( invK_y ) + self.y.shape[0]*np.log(2*np.pi) )
+        llh = 0.5 * ( logDetK + ( y.T ).dot( invK_y ) + y.shape[0]*np.log(2*np.pi) )  # NOTE: I'm not entirely sure about the constant when we have derivatives
 
         if grad == False:
             return llh
         else:
         
-            # FIXME: something must be going wrong here, because cannot get check_grad to show a match
             grad_llh = np.empty(guess.size)
             for hp in range(guess.size):
                 grad_hp = grad_K[:,:,hp]
-
-                #if guess.size == 4: imShow(grad_hp)
 
                 if cho_success:
                     invK_grad_hp = linalg.cho_solve(L, grad_hp)
                 else:
                     invK_grad_hp = invK.dot(grad_hp)
 
-                grad_llh[hp] = 0.5 * ( - (self.y.T).dot(invK_grad_hp).dot(invK_y) + np.trace(invK_grad_hp) )
+                grad_llh[hp] = 0.5 * ( - (y.T).dot(invK_grad_hp).dot(invK_y) + np.trace(invK_grad_hp) )
 
                 if ~np.isfinite(grad_llh[hp]):
                     print("\n[WARNING]: gradient(LLH) not finite", HP, ", not fit.\n")
                     return None
 
-            return llh, grad_llh*HP
+            return llh, grad_llh*HP # dLLH/d_guess = dLLH/d_HP * d_HP/d_guess = dLLH/d_HP * HP
 
     #}}}
 
@@ -404,7 +508,8 @@ class AbstractModel(ABC):
         print("Calculating posterior distribution...")
 
         # make covariance for data
-        covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
+        #covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
+        covTrain = self.trainingCovar(self.HP, self.nugget, grad = False)
         L = linalg.cho_factor(covTrain)
 
         if s2pred is not None: # multiPacing prediction
@@ -424,19 +529,24 @@ class AbstractModel(ABC):
         else: # singlePacing prediction
 
             # prediction covar: all mesh locations
-            predCov = self.kernelMatrix(self.HP, 0, np.arange(self.V.shape[0]), None, 0.0) # NOTE: nugget = 0
-            crossCov = predCov[:, self.vertex]
+            #predCov = self.kernelMatrix(self.HP, 0, np.arange(self.V.shape[0]), None, 0.0) # NOTE: nugget = 0
+            predCov, _ = self.kernelMatrix(self.HP, 0, self.V, self.V, None, None, 0, grad = False)
+            #crossCov = predCov[:, self.vertex]
+            b = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
+            crossCov, _ = self.kernelMatrix(self.HP, 0, self.V, b, None, None, 0, grad = False)
 
+        # NOTE: y must be sorted out below as well
+        y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
         # calculate GP posterior
-        Ef = crossCov.dot( linalg.cho_solve(L, self.y) )
+        Ef = crossCov.dot( linalg.cho_solve(L, y) )
         Vf = predCov - crossCov.dot( linalg.cho_solve(L, crossCov.T) )
         self.post_mean, self.post_var = Ef, Vf
 
         return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(np.diagonal(Vf)), std = True)
     #}}}
 
-    #{{{ posterior gradient
+    #{{{ posterior distribution of gradient
     @Decorators.check_posterior_args
     def posteriorGradient(self, s2pred = None):
         """Calculates GP posterior mean and variance *of gradient* and returns posterior mean and square root of pointwise variance
@@ -450,19 +560,32 @@ class AbstractModel(ABC):
 
         """
 
+        # TODO:
+        # * update kernelMatrix
+        # * update y
+        # * update cross covar; can probably use a = gradV, do formula on sheet, and reshape to 3D afterwards
+        # * 
+
         print("Calculating posterior distribution of gradient...")
 
         # make covariance for data
-        covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
+        #covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
+        covTrain = self.trainingCovar(self.HP, self.nugget, grad = False)
         L = linalg.cho_factor(covTrain)
+
+        y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
         # gradient of kernel at all mesh vertices
         # ---------------------------------------
         #print("Calculating kernel spatial gradient...")
-        SD = self.HP[1] * self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-        beta = np.einsum('i, ijk -> ijk', SD, self.gradV)
-        gradKern = np.einsum('ijk, li -> kjl', beta, self.V[self.vertex]) 
+#        SD = self.HP[1] * self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
+#        beta = np.einsum('i, ijk -> ijk', SD, self.gradV)
+#        gradKern = np.einsum('ijk, li -> kjl', beta, self.V[self.vertex]) 
         #print("gradKern.shape:", gradKern.shape)
+
+        a = self.gradV.T.reshape(-1,self.V.shape[1])
+        b = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
+        gradKern, _ = self.kernelMatrix(self.HP, 0, a, b, None, None, 0, grad = False)
 
         if self.s2 is not None:
         
@@ -475,8 +598,13 @@ class AbstractModel(ABC):
 
         # posterior mean of gradient
         # --------------------------
-        alpha = linalg.cho_solve(L, self.y)  #  K(X,X)^-1 y
-        v = np.einsum('kjl, l -> kj', gradKern, alpha)
+        alpha = linalg.cho_solve(L, y)  #  K(X,X)^-1 y
+        #v = np.einsum('kjl, l -> kj', gradKern, alpha)
+        print(gradKern.shape)
+        print(alpha.shape)
+        v = gradKern.dot(alpha)
+
+        return self.grad_meanFunction + self.unscale(v, std = True).reshape(-1,3) # ,  self.unscale(self.unscale(vVar, std = True)) # FIXME: it is not clear how to return UQ on CV at the moment
         #print("grad posterior mean shape:", v.shape)
        
         # posterior variance of gradient
@@ -646,7 +774,7 @@ class Matern52(AbstractModel):
 
         else:
 
-            return result
+            return result, None
 
         # hard wired simpler form for v = 5.2 and D = 2; does not seem to give any speed ups at all
         #a = np.sqrt(5.)/rho

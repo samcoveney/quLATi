@@ -112,7 +112,7 @@ def gradientEigenvectors(meshFine, N, V):
         gradEigen[:, :, vert] = v_mean
 
     
-    return gradEigen
+    return gradEigen.T
 
 #}}}
 
@@ -132,12 +132,12 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
     meshFine = pymesh.subdivide(mesh, order = subdiv, method = "simple")
     #print("ori_face_index:", meshFine.get_attribute("ori_face_index"))
 
-    print("Calculating Laplacian on atrial mesh using direct pyMesh routine")
+    print("  Calculating Laplacian on atrial mesh using direct pyMesh routine")
 
     assembler = pymesh.Assembler(meshFine);
     LS = assembler.assemble("laplacian");
 
-    print("Solving eigenvalue problem for Laplacian on atrial mesh...")
+    print( "  Solving eigenvalue problem for Laplacian on atrial mesh...")
 
     # using eigsh: because Ls should be symmetric. Shift invert + LM; should find smallest eigenvalues more easily
     [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM") #, maxiter = 5000)
@@ -161,9 +161,6 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
 
     # check if orthogonal..
     #print("checking orthonormal"); check = V.T.dot((V));  imShow(check)
-
-    # NOTE: these are the eigenvectors for the original mesh (before subdivision)
-    V = V[0:mesh.vertices.shape[0]]
 
     return Q, V, gradEigen
 
@@ -346,7 +343,7 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):
     Q, V, gradV = LaplacianEigenpairs(X, Tri, num = num, subdiv = subdiv)
 
     # keep values only for original (non-extended) mesh vertices
-    V, gradV = V[0:original_size], gradV[:,:,0:original_size]
+    V, gradV = V[0:original_size], gradV[0:original_size,:,:]
 
     return Q, V, gradV
 

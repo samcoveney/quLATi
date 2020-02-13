@@ -163,7 +163,7 @@ class AbstractModel(ABC):
 
     
     # {{{ data handling including scalings
-    def set_data(self, y, yerr, vertex, grady, gradyerr, gradvertex, s2 = None, grads2 = None):
+    def set_data(self, y, yerr, vertex, grady = np.empty([0,3]), gradyerr = np.empty([0]), gradvertex = np.empty([0], dtype = int), s2 = None, grads2 = np.empty([0])):
         """Set data for interpolation, scaled and centred."""
 
         # set mean and stdev of y
@@ -179,11 +179,6 @@ class AbstractModel(ABC):
 
         self.s2 = s2
         self.grads2 = grads2
-
-        print(self.grady)
-        print(self.gradyerr)
-        print(self.gradvertex)
-        print(self.grads2)
 
         self.reset()
 
@@ -205,124 +200,118 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ covariance matrix
-    # NOTE: this routine is going to be used exclusively for the covariance between observations
-    # NOTE: nugget will no longer need to be passed in separately
-    def trainingCovar(self, HP, nugget, grad = False):
-        """Returns the kernel matrix between all supplied vertex locations.
+    def makeCovar(self, type, grad = False):
+        """Returns the kernel matrix of the specified type.
         
            Arguments:
-           HP -- hyperparameters
-           nugget -- nugget to add to diagonal
+           type -- training covar, prediction covar, or cross covar
 
            Keyword arguments:
            grad -- whether to return the matrix kernel derivatives wrt hyperparameters
 
            NOTES:
-           * always builds a square matrix
-           * even if HP includes the nugget value, the nugget value in 'nugget' is used 
+           * nugget values passed to the kernel function will be set here depending on type
         
-           Build the covariance between observations in chunks; x where y observed, gx where dy/dx observed
-           K = | K_x_x   K_x_gx  |
-               | K_gx_x  K_gx_gx |
-
         """
 
-        # try to loop over the same code to fill out the sub-matrices
-        # NOTE: may need a better way because grad"values" may be none
+        if type == "training":
 
-        if False:
+            a = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
+            b = a
 
-            N, M = self.vertex.shape[0], self.gradvertex.shape[0]
-            cov = np.empty([N + 3*M, N + 3*M])
-            if grad: grad_cov = np.empty([N + 3*M, N + 3*M, HP.shape[0]])
-
-            # NOTE: this easily allows different nuggets to be used for observations and derivative observations
-            # NOTE: could also combine errors and nugget before sending to kernelMatrix, possible.
-
-            # NOTE: it may be possible to do this all in one go by preparing a and b correctly
-            # NOTE: a better order for eigenvector gradients would also be helpful
-
-            # K_x_x
-            a, b = self.V[self.vertex], self.V[self.vertex]
-            a_s2, b_s2 = [self.s2, self.s2] if self.s2 is not None else [None, None] 
-            err = self.yerr
-            K_x_x, grad_K_x_x = self.kernelMatrix(HP, nugget, a, b, a_s2, b_s2, err, grad = grad)
-            cov[0:a.shape[0], 0:b.shape[0]] = K_x_x
-            if grad: grad_cov[0:a.shape[0], 0:b.shape[0], :] = grad_K_x_x
-
-            # K_gx_gx
-            # need transpose to make last dimension the eigenfunction index
-            # then need to stack each spatial derivative up
-            a, b = self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]), self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) 
-
-            # NOTE: may need to repeat 3 times for both s2 and err
-            a_s2, b_s2 = [self.grads2, self.grads2] if self.grads2 is not None else [None, None] 
-            err = self.gradyerr.flatten()
-
-            K_x_x, grad_K_x_x = self.kernelMatrix(HP, nugget, a, b, a_s2, b_s2, err, grad = grad)
-            cov[self.vertex.shape[0]:][:, self.vertex.shape[0]:] = K_x_x
-            if grad: grad_cov[self.vertex.shape[0]:][:, self.vertex.shape[0]:, :] = grad_K_x_x
-
-            # K_x_gx and K_gx_x
-            a, b = self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) 
-            a_s2, b_s2 = [self.s2, self.grads2] if self.grads2 is not None else [None, None] # NOTE: may need to repeat 3 times
-            K_x_x, grad_K_x_x = self.kernelMatrix(HP, 0, a, b, a_s2, b_s2, 0, grad = grad)
-            # make sure nugget gradient on these off diagonals is zero
-            if grad and self.nugget is None: grad_K_x_x[:,:,2] = 0
-            cov[0:self.vertex.shape[0]][:, self.vertex.shape[0]:] = K_x_x
-            cov[self.vertex.shape[0]:][:, 0:self.vertex.shape[0]] = K_x_x.T
-
-            if grad: grad_cov[0:self.vertex.shape[0]][:, self.vertex.shape[0]:, :] = grad_K_x_x
-            if grad: grad_cov[self.vertex.shape[0]:][:, 0:self.vertex.shape[0], :] = np.swapaxes(grad_K_x_x, 0, 1)
-
-        else:
-             
-            a = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
             if self.s2 is not None:
                 # NOTE: may need to repeat 3 times for both s2 and err for the gradient observations
                 a_s2 = np.hstack([self.s2, self.grads2])
             else:
                 a_s2 = None
+            b_s2 = a_s2
 
+            nugget = self.nugget
             err = np.hstack([self.yerr, self.gradyerr.flatten()])
 
-            # FIXME: will need different nugget terms for the different observations at some point
 
-            cov, grad_cov = self.kernelMatrix(HP, nugget, a, a, a_s2, a_s2, err, grad = grad)
+        if type == "prediction":
 
-            # can compare different methods
-            #imShow(cov - cov_test)
-            #imShow(grad_cov - grad_cov_test)
+            a = self.V
+            b = a
 
+            # FIXME: add s2 stuff
+            a_s2 = None
+            b_s2 = a_s2
+
+
+        if type == "cross":
+
+            a = self.V
+            b = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
+
+            # FIXME: add s2 stuff
+            a_s2 = None
+            b_s2 = a_s2
+
+
+        if type == "grad_cross":
+        
+            a = self.gradV.reshape(-1,self.V.shape[1])
+            b = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
+
+            # FIXME: add s2 stuff
+            a_s2 = None
+            b_s2 = a_s2
+
+
+        if type  == "grad_grad_prediction":
+            
+            # NOTE: exception, do not calclate the full posterior variance for derivative predictions, it is too big! Just pointwise.
+            SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
+            temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
+            temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
+            return self.HP[1]*temp
+        
+
+        # nuggets and observations errors for training covariance only
+        if type != "training":
+            nugget = 0
+            err = 0
+
+        # call to create the kernel matrix
+        cov, grad_cov = self.kernelMatrix(nugget, a, b, a_s2, b_s2, err, grad = grad)
 
         if grad:
             return cov, grad_cov
         else:
             return cov
+    #}}}
 
-
-    def kernelMatrix(self, HP, nugget, a, b, a_s2, b_s2, err, grad = False):
+    #{{{ kernel matrix
+    def kernelMatrix(self, nugget, a, b, a_s2, b_s2, err, grad = False):
+        """Creates matrix of kernel entries, and gradient of entries wrt hyperparameters if requiered.
+        
+           NOTES:
+           * kernelMatrix always uses the value passed in nugget as the nugget, so that a zero nugget can be passed for non-training-data covariances.
+        
+        """
 
         # for storing grad_kernel results
-        if grad: grad_cov = np.empty([a.shape[0], b.shape[0], HP.shape[0]])
+        if grad: grad_cov = np.empty([a.shape[0], b.shape[0], self.HP.shape[0]])
 
         # evaluate the spectral density
-        SD, gradSD = self.spectralDensity( HP[0], np.sqrt(self.Q), grad = grad )
+        SD, gradSD = self.spectralDensity( self.HP[0], np.sqrt(self.Q), grad = grad )
         
         # gradient wrt lengthscale
-        if grad: grad_cov[:,:,0] = HP[1] * a.dot(np.diag(gradSD)).dot(b.T)
+        if grad: grad_cov[:,:,0] = self.HP[1] * a.dot(np.diag(gradSD)).dot(b.T)
 
         cov = a.dot(np.diag(SD)).dot(b.T)
 
         # gradient wrt variance
         if grad: grad_cov[:,:,1] = np.copy(cov)
 
-        cov = HP[1]*cov
+        cov = self.HP[1]*cov
             
         # multiply kernel by RBF(s2)
         if self.s2 is not None:
     
-            Ks2, gradKs2 = self.s2kernel(a_s2, b_s2, HP[-1], grad = grad) # returns Ks2, gradKs2
+            Ks2, gradKs2 = self.s2kernel(a_s2, b_s2, self.HP[-1], grad = grad) # returns Ks2, gradKs2
 
             # gradient wrt s2l
             if grad: grad_cov[:,:,-1] = gradKs2 * cov
@@ -333,7 +322,7 @@ class AbstractModel(ABC):
         np.fill_diagonal(cov, np.diag(cov) + nugget + err**2)
 
         # gradient wrt nugget # NOTE: added test to make sure we only add this on K_x_x and K_gx_gx
-        if grad and self.nugget is None and a.shape == b.shape: grad_cov[:,:,2] = np.eye(a.shape[0])
+        if grad and self.nugget_train: grad_cov[:,:,2] = np.eye(a.shape[0])
 
         if grad:
             return cov, grad_cov
@@ -343,28 +332,26 @@ class AbstractModel(ABC):
 
     #{{{ negative loglikelihood
     # NOTE: if a nugget is provided to LLH via the optimizer use that value as the nugget (fixed), else take value from HP (train nugget)
-    def LLH(self, guess, nugget, grad = False):
+    def LLH(self, guess, grad = False):
         """Return the negative loglikelihood.
         
            Arguments:
            guess -- log(hyperparameter values) for training
-           nugget -- value of the nugget, which should be either a positive number (do not train) or None (train)
            grad -- return gradient of LLH wrt guess
 
            NOTES:
            * this function receives guess = log(HP), therefore derivatives wrt guess are returned as dLLH/dg = dLLH/dHP * dHP/dguess
-           * the nugget passed to kernelMatrix will be either 'nugget' (if nugget is a number) or HP[2] (if nugget is None)
         
         """
         
         # FIXME: might be easier to set the stored values in the class, and have kernelMatrix use these
-        HP = np.exp(guess)
-        nug = nugget if nugget is not None else HP[2] # if training on the nugget, it is always HP[2]
+        self.HP = np.exp(guess)
+        if self.nugget_train: self.nugget = self.HP[2] # if training on the nugget, it is always HP[2]
 
         if grad == True:
-            K, grad_K = self.trainingCovar(HP, nug, grad = grad)
+            K, grad_K = self.makeCovar("training", grad = grad)
         else:
-            K = self.trainingCovar(HP, nug, grad = grad)
+            K = self.makeCovar("training", grad = grad)
 
         y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
@@ -386,11 +373,11 @@ class AbstractModel(ABC):
                 logDetK = np.log( linalg.det(K) )
 
             except np.linalg.linalg.LinAlgError as e:
-                print("\n[WARNING]: Matrix not PSD for", HP, ", not fit.\n")
+                print("\n[WARNING]: Matrix not PSD for", self.HP, ", not fit.\n")
 
                 return None
             except ValueError as e:
-                print("\n[WARNING]: Ill-conditioned matrix for", HP, ", not fit.\n")
+                print("\n[WARNING]: Ill-conditioned matrix for", self.HP, ", not fit.\n")
                 return None
                 
         llh = 0.5 * ( logDetK + ( y.T ).dot( invK_y ) + y.shape[0]*np.log(2*np.pi) )  # NOTE: I'm not entirely sure about the constant when we have derivatives
@@ -411,10 +398,10 @@ class AbstractModel(ABC):
                 grad_llh[hp] = 0.5 * ( - (y.T).dot(invK_grad_hp).dot(invK_y) + np.trace(invK_grad_hp) )
 
                 if ~np.isfinite(grad_llh[hp]):
-                    print("\n[WARNING]: gradient(LLH) not finite", HP, ", not fit.\n")
+                    print("\n[WARNING]: gradient(LLH) not finite", self.HP, ", not fit.\n")
                     return None
 
-            return llh, grad_llh*HP # dLLH/d_guess = dLLH/d_HP * d_HP/d_guess = dLLH/d_HP * HP
+            return llh, grad_llh*self.HP # dLLH/d_guess = dLLH/d_HP * d_HP/d_guess = dLLH/d_HP * HP
 
     #}}}
 
@@ -447,10 +434,12 @@ class AbstractModel(ABC):
         self.nugget = nugget
 
         if nugget is None:  # nugget not supplied; we must train on nugget
+            self.nugget_train = True
             guess = np.hstack([guess, nguess])
             hdr = hdr + " nug " + " | " 
         else:
             nugget = np.abs(nugget)
+            self.nugget_train = False
         if self.s2 is not None:  # s2 values supplied; we must train with s2
             guess = np.hstack([guess, S2guess])
             hdr = hdr + " s2l " + " | " 
@@ -462,8 +451,8 @@ class AbstractModel(ABC):
             optFail = False
             try:
                 bestStr = "   "
-                res = minimize(self.LLH, g, args = (nugget, True), method = 'Newton-CG', jac=True) # make use of gradLLH
-                #res = minimize(self.LLH, g, args = (nugget, False), method = 'Nelder-Mead') 
+                res = minimize(self.LLH, g, args = (True), method = 'Newton-CG', jac=True) # make use of gradLLH
+                #res = minimize(self.LLH, g, args = (False), method = 'Nelder-Mead') 
 
                 if np.isfinite(res.fun):
                     try:
@@ -507,38 +496,18 @@ class AbstractModel(ABC):
 
         print("Calculating posterior distribution...")
 
+        # FIXME: sort out how s2pred is handled
+
         # make covariance for data
-        #covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
-        covTrain = self.trainingCovar(self.HP, self.nugget, grad = False)
-        L = linalg.cho_factor(covTrain)
+        covTrain = self.makeCovar("training")
+        predCov  = self.makeCovar("prediction")
+        crossCov = self.makeCovar("cross")
 
-        if s2pred is not None: # multiPacing prediction
-            
-            print("predicting for s2pred: {:0.3f}".format(s2pred))
-            s2pred = np.array([[s2pred]])
-
-            # stack (mesh vertices, data vertices) and (s2pred, data s2) and make a big covariance matrix 
-            fullInds = np.hstack( [np.arange(self.V.shape[0]), self.vertex] )
-            fullS2 = np.vstack([np.repeat(s2pred, self.V.shape[0])[:,None], self.s2])
-            covBig = self.kernelMatrix(self.HP, 0, fullInds, fullS2, 0.0) # NOTE: nugget = 0
-
-            # slice out the cross covariance and prediction covariance
-            crossCov = covBig[0:self.V.shape[0]][:, -self.vertex.shape[0]:]  # rows: all mesh vertices; cols: data vertices
-            predCov = covBig[0:self.V.shape[0]][:, 0:self.V.shape[0]]
-
-        else: # singlePacing prediction
-
-            # prediction covar: all mesh locations
-            #predCov = self.kernelMatrix(self.HP, 0, np.arange(self.V.shape[0]), None, 0.0) # NOTE: nugget = 0
-            predCov, _ = self.kernelMatrix(self.HP, 0, self.V, self.V, None, None, 0, grad = False)
-            #crossCov = predCov[:, self.vertex]
-            b = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
-            crossCov, _ = self.kernelMatrix(self.HP, 0, self.V, b, None, None, 0, grad = False)
-
-        # NOTE: y must be sorted out below as well
+        # NOTE: y must be prepared base on whether there are derivative observations or not
         y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
         # calculate GP posterior
+        L = linalg.cho_factor(covTrain)
         Ef = crossCov.dot( linalg.cho_solve(L, y) )
         Vf = predCov - crossCov.dot( linalg.cho_solve(L, crossCov.T) )
         self.post_mean, self.post_var = Ef, Vf
@@ -560,72 +529,35 @@ class AbstractModel(ABC):
 
         """
 
-        # TODO:
-        # * update kernelMatrix
-        # * update y
-        # * update cross covar; can probably use a = gradV, do formula on sheet, and reshape to 3D afterwards
-        # * 
-
         print("Calculating posterior distribution of gradient...")
 
-        # make covariance for data
-        #covTrain = self.kernelMatrix(self.HP, self.nugget, self.vertex, self.s2, self.yerr)
-        covTrain = self.trainingCovar(self.HP, self.nugget, grad = False)
-        L = linalg.cho_factor(covTrain)
-
+        covTrain = self.makeCovar("training")
         y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
+        gradKern = self.makeCovar("grad_cross")
 
-        # gradient of kernel at all mesh vertices
-        # ---------------------------------------
-        #print("Calculating kernel spatial gradient...")
-#        SD = self.HP[1] * self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-#        beta = np.einsum('i, ijk -> ijk', SD, self.gradV)
-#        gradKern = np.einsum('ijk, li -> kjl', beta, self.V[self.vertex]) 
-        #print("gradKern.shape:", gradKern.shape)
-
-        a = self.gradV.T.reshape(-1,self.V.shape[1])
-        b = np.vstack( [ self.V[self.vertex], self.gradV[:,:,self.gradvertex].T.reshape(-1,self.V.shape[1]) ] )
-        gradKern, _ = self.kernelMatrix(self.HP, 0, a, b, None, None, 0, grad = False)
-
-        if self.s2 is not None:
-        
-            print("predicting for s2pred: {:0.3f}".format(s2pred))
-            s2pred = np.array([[s2pred]])
-
-            dists = cdist(self.s2/self.HP[-1], s2pred/self.HP[-1], "sqeuclidean") # last HP is lengthscale for S2
-            Ks2 = np.exp(-dists).flatten()
-            gradKern = np.einsum("k, ijk -> ijk", Ks2, gradKern)
 
         # posterior mean of gradient
         # --------------------------
+        L = linalg.cho_factor(covTrain)
         alpha = linalg.cho_solve(L, y)  #  K(X,X)^-1 y
-        #v = np.einsum('kjl, l -> kj', gradKern, alpha)
-        print(gradKern.shape)
-        print(alpha.shape)
-        v = gradKern.dot(alpha)
+        self.grad_post_mean = gradKern.dot(alpha).reshape(-1,3)
 
-        return self.grad_meanFunction + self.unscale(v, std = True).reshape(-1,3) # ,  self.unscale(self.unscale(vVar, std = True)) # FIXME: it is not clear how to return UQ on CV at the moment
-        #print("grad posterior mean shape:", v.shape)
-       
         # posterior variance of gradient
         # ------------------------------
-        # vVar = grad2Kern - zeta, where zeta = gradK K^-1 gradK
+        grad2Kern = self.makeCovar("grad_grad_prediction") # N x (3 x 3)
 
-        grad2Kern = np.einsum('i, ijk, ilk -> kjl', SD, self.gradV, self.gradV)
+        # zeta = gradKern.dot(linalg.cho_solve(L, gradKern.T)) # probably correct, but causes memory error because large arrays
 
         invK = linalg.cho_solve(L, np.identity(covTrain.shape[0]))
+        # zeta = np.einsum('klm , mp , kjp -> klj', gradKern, invK, gradKern) # do in two stages as below; much faster
+        zeta = np.einsum('km , mp -> kp', gradKern, invK) 
+        zeta = np.einsum('klp , kjp -> klj', zeta.reshape(-1, 3, y.shape[0]), gradKern.reshape(-1, 3, y.shape[0])) # reshape for cross terms on different directions
 
-        # doing zeta = np.einsum('klm , mp , kjp -> klj', gradKern, invK, gradKern) in two stages; much faster
-        zeta = np.einsum('klm , mp -> klp', gradKern, invK) 
-        zeta = np.einsum('klp , kjp -> klj', zeta, gradKern)
+        self.grad_post_var = grad2Kern - zeta
 
-        vVar = grad2Kern - zeta
-        #print("grad posterior variance shape:", vVar.shape)
-
-        self.grad_post_mean, self.grad_post_var = v, vVar
 
         #print("\n[WARNING] the variance of posterior gradient is a 3x3 matrix for each vertex.\n")
-        return self.grad_meanFunction + self.unscale(v, std = True) # ,  self.unscale(self.unscale(vVar, std = True)) # FIXME: it is not clear how to return UQ on CV at the moment
+        return self.grad_meanFunction + self.unscale(self.grad_post_mean, std = True) # ,  self.unscale(self.unscale(vVar, std = True)) # FIXME: it is not clear how to return UQ on CV at the moment
 
     #}}}
 

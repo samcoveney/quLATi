@@ -126,6 +126,8 @@ class AbstractModel(ABC):
         self.post_mean, self.post_var = None, None
         self.grad_post_mean, self.grad_post_var = None, None
 
+        self.gradnugget = None
+
         # set these values so that user does not have to call setMeanFunction
         self.meanFunction, self.grad_meanFunction = 0, np.array([[0,0,0]])
 
@@ -180,6 +182,12 @@ class AbstractModel(ABC):
         self.s2 = s2
         self.grads2 = grads2
 
+        print(self.y)
+        #print(self.yerr) 
+        print(self.grady)
+        #print(self.gradyerr)
+        input()
+
         self.reset()
 
 
@@ -226,8 +234,7 @@ class AbstractModel(ABC):
                 a_s2 = None
             b_s2 = a_s2
 
-            nugget = self.nugget
-            err = np.hstack([self.yerr, self.gradyerr.flatten()])
+            err = np.hstack([self.yerr**2 + self.nugget, self.gradyerr.flatten()**2 + self.gradnugget]) # NOTE: error is properly prepared here
 
 
         if type == "prediction":
@@ -262,20 +269,25 @@ class AbstractModel(ABC):
 
         if type  == "grad_grad_prediction":
             
+            print(type)
             # NOTE: exception, do not calclate the full posterior variance for derivative predictions, it is too big! Just pointwise.
             SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-            temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
-            temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
+            print("start")
+            #temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
+            #temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
+            #temp = np.einsum('j, ijk -> ijk', SD, self.gradV)
+            #temp = np.einsum('ijk, ljk -> kil', temp, self.gradV)
+            temp = np.einsum('k, ijk -> ijk', SD, self.gradV)
+            temp = np.einsum('ijk, ilk -> ijl', temp, self.gradV)
+            print("end... with shape:", temp.shape)
             return self.HP[1]*temp
         
 
         # nuggets and observations errors for training covariance only
-        if type != "training":
-            nugget = 0
-            err = 0
+        if type != "training": err = 0
 
         # call to create the kernel matrix
-        cov, grad_cov = self.kernelMatrix(nugget, a, b, a_s2, b_s2, err, grad = grad)
+        cov, grad_cov = self.kernelMatrix(a, b, a_s2, b_s2, err, grad = grad)
 
         if grad:
             return cov, grad_cov
@@ -284,7 +296,7 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ kernel matrix
-    def kernelMatrix(self, nugget, a, b, a_s2, b_s2, err, grad = False):
+    def kernelMatrix(self, a, b, a_s2, b_s2, err, grad = False):
         """Creates matrix of kernel entries, and gradient of entries wrt hyperparameters if requiered.
         
            NOTES:
@@ -301,7 +313,8 @@ class AbstractModel(ABC):
         # gradient wrt lengthscale
         if grad: grad_cov[:,:,0] = self.HP[1] * a.dot(np.diag(gradSD)).dot(b.T)
 
-        cov = a.dot(np.diag(SD)).dot(b.T)
+        #cov = a.dot(np.diag(SD)).dot(b.T)
+        cov = a.dot( (b*SD).T ) # faster like this
 
         # gradient wrt variance
         if grad: grad_cov[:,:,1] = np.copy(cov)
@@ -319,10 +332,11 @@ class AbstractModel(ABC):
             cov = Ks2 * cov
 
         # add nugget to diagonal
-        np.fill_diagonal(cov, np.diag(cov) + nugget + err**2)
+        np.fill_diagonal(cov, np.diag(cov) + err)
 
         # gradient wrt nugget # NOTE: added test to make sure we only add this on K_x_x and K_gx_gx
-        if grad and self.nugget_train: grad_cov[:,:,2] = np.eye(a.shape[0])
+        if grad and self.nugget_train: grad_cov[:,:,self.nugget_index] = np.diag( np.hstack( [ np.ones(self.y.shape[0]), np.zeros(self.grady.flatten().shape[0]) ] ) )  # old: np.eye(a.shape[0])
+        if grad and self.gradnugget_train: grad_cov[:,:,self.gradnugget_index] = np.diag( np.hstack( [ np.zeros(self.y.shape[0]), np.ones(self.grady.flatten().shape[0]) ] ) )
 
         if grad:
             return cov, grad_cov
@@ -346,7 +360,8 @@ class AbstractModel(ABC):
         
         # FIXME: might be easier to set the stored values in the class, and have kernelMatrix use these
         self.HP = np.exp(guess)
-        if self.nugget_train: self.nugget = self.HP[2] # if training on the nugget, it is always HP[2]
+        if self.nugget_train: self.nugget = self.HP[self.nugget_index]
+        if self.gradnugget_train: self.gradnugget = self.HP[self.gradnugget_index]
 
         if grad == True:
             K, grad_K = self.makeCovar("training", grad = grad)
@@ -406,7 +421,7 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ optimize the hyperparameters
-    def optimize(self, nugget, restarts):
+    def optimize(self, nugget, restarts, gradnugget = 0.0001):
         """Optimize the hyperparameters.
         
            Arguments:
@@ -423,23 +438,40 @@ class AbstractModel(ABC):
         fmt = lambda x: '+++++' if abs(x) > 1e3 else '-----' if abs(x) < 1e-3 else str(x)[:5] % x
 
         # initial guesses for hyperparameters
-        dguess = np.random.uniform(np.log(1.0), np.log(100), size = restarts).reshape([1,-1]).T
-        sguess = np.random.uniform(np.log(3), np.log(5), size = restarts).reshape([1,-1]).T
+        dguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
+        sguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
         nguess = np.random.uniform(np.log(1e-3), np.log(1e-2), size = restarts).reshape([1,-1]).T
+        gnguess = np.random.uniform(np.log(1e-3), np.log(1e-2), size = restarts).reshape([1,-1]).T
         S2guess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
 
         hdr = "Restart | " + " len " + " | " + " var " + " | "
         guess = np.hstack([dguess, sguess])
 
+        # nugget
         self.nugget = nugget
 
         if nugget is None:  # nugget not supplied; we must train on nugget
             self.nugget_train = True
             guess = np.hstack([guess, nguess])
+            self.nugget_index = guess.shape[1] - 1
             hdr = hdr + " nug " + " | " 
         else:
             nugget = np.abs(nugget)
             self.nugget_train = False
+
+        # gradnugget
+        self.gradnugget = gradnugget
+
+        if gradnugget is None:  # gradnugget not supplied; we must train on gradnugget
+            self.gradnugget_train = True
+            guess = np.hstack([guess, gnguess]) # NOTE: currently using same guess as nugget
+            self.gradnugget_index = guess.shape[1] - 1
+            hdr = hdr + " gnu " + " | " 
+        else:
+            gradnugget = np.abs(gradnugget)
+            self.gradnugget_train = False
+
+        # s2 lengthscale
         if self.s2 is not None:  # s2 values supplied; we must train with s2
             guess = np.hstack([guess, S2guess])
             hdr = hdr + " s2l " + " | " 
@@ -451,8 +483,8 @@ class AbstractModel(ABC):
             optFail = False
             try:
                 bestStr = "   "
-                res = minimize(self.LLH, g, args = (True), method = 'Newton-CG', jac=True) # make use of gradLLH
-                #res = minimize(self.LLH, g, args = (False), method = 'Nelder-Mead') 
+                #res = minimize(self.LLH, g, args = (True), method = 'Newton-CG', jac=True) # make use of gradLLH
+                res = minimize(self.LLH, g, args = (False), method = 'Nelder-Mead') 
 
                 if np.isfinite(res.fun):
                     try:
@@ -474,10 +506,12 @@ class AbstractModel(ABC):
                 optFail = True
 
         self.HP = np.exp(bestRes.x)
-        self.nugget = self.HP[2] if nugget is None else nugget 
+        self.nugget = self.HP[self.nugget_index] if nugget is None else nugget 
+        self.gradnugget = self.HP[self.gradnugget_index] if gradnugget is None else gradnugget 
 
         print("\nHyperParams:", ", ".join(map(str, [fmt(i) for i in self.HP])), \
-              "(nugget: {:1.3f})\n".format(self.nugget))
+              "\n  (nugget: {:f})".format(self.nugget),
+              "\n  (gradnugget: {:f})\n".format(self.gradnugget))
 
     #}}}
 
@@ -548,9 +582,12 @@ class AbstractModel(ABC):
 
         # zeta = gradKern.dot(linalg.cho_solve(L, gradKern.T)) # probably correct, but causes memory error because large arrays
 
+        print("chosolve...")
         invK = linalg.cho_solve(L, np.identity(covTrain.shape[0]))
         # zeta = np.einsum('klm , mp , kjp -> klj', gradKern, invK, gradKern) # do in two stages as below; much faster
-        zeta = np.einsum('km , mp -> kp', gradKern, invK) 
+        print("einsum 1")
+        zeta = np.einsum('km , pm -> kp', gradKern, invK.T) 
+        print("einsum 2")
         zeta = np.einsum('klp , kjp -> klj', zeta.reshape(-1, 3, y.shape[0]), gradKern.reshape(-1, 3, y.shape[0])) # reshape for cross terms on different directions
 
         self.grad_post_var = grad2Kern - zeta
@@ -685,7 +722,7 @@ class Matern52(AbstractModel):
         """
         
         D = 2  # dimension
-        v = 5.0/2.0  # smoothness
+        v = 7.0/2.0  # smoothness
 
         alpha = (2**D * np.pi**(D/2) * gamma(v + (D/2)) * (2*v)**v) / gamma(v)
         delta = 1.0 / rho**(2*v)

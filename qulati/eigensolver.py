@@ -1,7 +1,12 @@
 import numpy as np
+from numpy.linalg import norm
 from scipy.sparse.linalg import eigsh
+from scipy.spatial.distance import cdist
 
 import pymesh
+
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
 
 #{{{ fit a 2D plane to a set of 3D points using lstsq
@@ -99,12 +104,23 @@ def gradientEigenvectors(meshFine, N, V):
             #print(v[1,:])
             #print(v.shape)
 
-            vSum = v if count == 0 else vSum + v
+            # original
+            #vSum = v if count == 0 else vSum + v
+
+            # new: weight by areas of the triangles involved
+            vSum = v*areas[face] if count == 0 else vSum + v*areas[face]
+            areasSum = areas[face] if count == 0 else areasSum + areas[face] 
+
 
         # 6. combine gradients at face centres back to central vertex
         # -----------------------------------------------------------
 
-        v_mean = vSum / (count+1) # FIXME: may want to weight this average by face area, or distance of face centre to vertex, or... etc.
+        # original 
+        #v_mean = vSum / (count+1) # FIXME: may want to weight this average by face area, or distance of face centre to vertex, or... etc.
+
+        # new: weight by areas of the triangles involved
+        v_mean = vSum / areasSum 
+
         #print(v_mean)
         #print("mean:", v_mean[1,:])
         #input()
@@ -115,6 +131,197 @@ def gradientEigenvectors(meshFine, N, V):
     return gradEigen.T
 
 #}}}
+
+
+def subDivide(mesh):
+    """My custom subdivide function.
+
+       o : original vertices
+       # : vertex at face cetre
+       + : vertices on edges
+    
+           o --- + --- + --- o
+            \   / \   / \   /
+             \ /   \ /   \ /
+              + --- # --- +
+               \   / \   /
+                \ /   \ /
+                 + --- +
+                  \   /
+                   \ /
+                    o
+    
+       Return the entire new mesh, and info for which vertices are which, etc.
+
+    """
+ 
+    X = mesh.vertices
+
+    # face IDs
+    mesh.add_attribute("face_index")
+    IDs = mesh.get_attribute("face_index").astype(int)
+
+    # face centroids i.e. #
+    # ---------------------
+    mesh.add_attribute("face_centroid")
+    centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
+
+    print("IDs shape:", IDs.shape)
+    print("centroids shape:", centroids.shape)
+
+
+    # edges pairs i.e. +
+    # ------------------
+    # when I come to need these values, I will need to call them up in anti-clockwise order...
+
+    __, edges = pymesh.mesh_to_graph(mesh)
+    edgePairs = np.zeros([edges.shape[0],2,3])
+    print("edgePairs.shape:", edgePairs.shape)
+    
+    mul = np.array([[1./3.], [2./3.]])
+
+    for a, edge in enumerate(edges):
+
+        e = X[edge[1]] - X[edge[0]]  # edge vector  o ------------ o
+        ep = X[edge[0]] + e*mul  # two new points   o -- + -- + -- o
+        edgePairs[a] = ep
+
+    
+    # need to give these new vertices an ID
+    # -------------------------------------
+    # original vertices have original IDs
+    # centroid vertices have X.shape[0] + centroidIDs
+    # edge vertices have X.shape[0] + centroidIDs.shape[0] + edgePairs.flatten().reshape(-1,3)IDs
+    # NOTE: I cannot make the list on the fly because many vertices are reused...
+
+
+    # new edge list:
+    XN = X.shape[0]
+    CN = centroids.shape[0]
+    newX = np.vstack([X, centroids, edgePairs.flatten().reshape(-1, 3)])
+
+    #np.savetxt("/tmp/newX.txt", newX)
+    #pymesh.save_mesh("/tmp/mesh.stl", mesh, ascii=True);
+#    input("[WAIT]")
+
+
+    # stitch all the points together
+    # ------------------------------
+
+    print("Stitching together a new mesh...")
+
+    newTri = []
+
+    for idx, tri in enumerate(mesh.faces):
+    
+        #print("\n------ {:d} ------".format(idx))
+        #print("tri:", tri)
+
+
+        # centroid for this triangle
+        c = centroids[idx]
+        #print("c:", c)
+        # should also be here:
+        cIdx = XN + idx
+        cc = newX[cIdx] # NOTE: XN + idx is the index into newX that we are interested in
+        #print("cc:", cc)
+
+        # which edges belonging to this triangle
+        #whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
+        #print("edge IDs:", whichEdges)
+        #print("edges:", edges[whichEdges])        
+
+        whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
+        #print("whichEdges:", whichEdges)
+
+        pairs = edgePairs[whichEdges].flatten().reshape(-1,3) # this gets me the coordinates of + from edgePairs
+        #print("pairs:", pairs)
+
+        # TODO: indices into newX of edge points, which is what we want
+        pair1Idx_a, pair1Idx_b = XN + CN + 2*whichEdges[0], XN + CN + 2*whichEdges[0] + 1
+        pair2Idx_a, pair2Idx_b = XN + CN + 2*whichEdges[1], XN + CN + 2*whichEdges[1] + 1
+        pair3Idx_a, pair3Idx_b = XN + CN + 2*whichEdges[2], XN + CN + 2*whichEdges[2] + 1
+
+
+        # reorder the pairs to go around the triangle anti-clockwise
+        # doesn't work because the edgepairs are not in any particular order
+        #if norm(newX[tri[0]] - newX[pair1Idx_a]) > norm(newX[tri[0]] - newX[pair1Idx_b]):
+        #    pair1Idx_a, pair1Idx_b = pair1Idx_b, pair1Idx_a
+        #if norm(newX[tri[1]] - newX[pair2Idx_a]) > norm(newX[tri[1]] - newX[pair2Idx_b]):
+        #    pair2Idx_a, pair2Idx_b = pair2Idx_b, pair2Idx_a
+        #if norm(newX[tri[2]] - newX[pair3Idx_a]) > norm(newX[tri[2]] - newX[pair3Idx_b]):
+        #    pair3Idx_a, pair3Idx_b = pair3Idx_b, pair3Idx_a
+
+
+        pairList = [pair1Idx_a , pair1Idx_b, pair2Idx_a , pair2Idx_b, pair3Idx_a , pair3Idx_b]
+        pair1 = newX[ [pair1Idx_a , pair1Idx_b] ]
+        pair2 = newX[ [pair2Idx_a , pair2Idx_b] ]
+        pair3 = newX[ [pair3Idx_a , pair3Idx_b] ]
+        pairs = np.vstack([pair1, pair2, pair3])
+        #print("pairs:", pairs)
+
+        # sanity check figure of the retrieved points
+        #fig = plt.figure()
+        #ax = Axes3D(fig)
+        #ax.scatter(newX[tri][:,0], newX[tri][:,1], newX[tri][:,2], c = np.arange(3), cmap = "jet") #, vmin = MIN, vmax = MAX)
+        #ax.scatter(cc[0], cc[1], cc[2], color = "black") #, vmin = MIN, vmax = MAX)
+        #ax.scatter(pairs[:,0], pairs[:,1], pairs[:,2], c = np.arange(pairs.shape[0]), cmap = "jet")
+        #plt.show()
+
+
+        # TODO: connect the points together properly by updating newTri
+
+        # connect # to +
+        newTri.append( [ cIdx, pair1Idx_a, pair1Idx_b  ] )
+        newTri.append( [ cIdx, pair2Idx_a, pair2Idx_b  ] )
+        newTri.append( [ cIdx, pair3Idx_a, pair3Idx_b  ] )
+
+        # consider the two nearest vertices + to each corner o;
+        # FIXME: this does not always becaus might pick points on same edge! Need closest on each edge, then two closest of those
+        # FIXME: can probably do the cdist in a single move instead of looping over corner vertices
+        for v in tri:
+
+            # FIXME: even this does not quite work, as sometimes connecting edge and opposite edge have the two closest points
+            #        * if I new the edge for each pair, I can keep only the two connecting ones
+
+            #print("v:", v)
+            #print("edges:", edges[whichEdges])
+            #print("in:", np.isin(edges[whichEdges], v).any(axis = 1) )
+            #input()
+            connect = np.isin(edges[whichEdges], v).any(axis = 1)
+
+            dists = cdist(newX[v][None,:], pairs).reshape(-1,2)
+            #print("dists:", dists)
+            d = np.array([0,2,4])[connect] + np.argmin(dists, axis = 1)[connect]
+            #print("d:", d)
+            d = d[ np.argsort(dists.flatten()[d]) ] # FIXME: only need first two
+            #print("dists 2:", dists.flatten()[d])
+
+            # connect corner o to these found points +
+            newTri.append( [v, pairList[d[0]], pairList[d[1]] ] )
+            # connect centre # to these found points +
+            newTri.append( [cIdx, pairList[d[0]], pairList[d[1]] ] )
+
+
+            #near1 = np.argpartition(cdist(newX[v][None,:], newX[pairList]), 2)[0,0:2]
+            #print("near1:", near1)
+            #near1 = [v] + pairList[near1[0]] + pairList[near1[1]]
+            # connect corner o to these found points +
+            #newTri.append( [v, pairList[near1[0]], pairList[near1[1]] ] )
+            # connect centre # to these found points +
+            #newTri.append( [cIdx, pairList[near1[0]], pairList[near1[1]] ] )
+
+        #print("so far...")
+        #print(newTri)
+
+    newTri = np.array(newTri, dtype = np.int32)
+
+    #NEWMESH = pymesh.form_mesh(newX, newTri)
+    #pymesh.save_mesh("/tmp/meshNew.stl", NEWMESH, ascii=True);
+    input("Done!")
+
+    return newX, newTri
+        
 
 
 #{{{ solve eigenvalue problem for mesh
@@ -128,6 +335,9 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
     mesh.add_attribute("vertex_valance")
 
     N = mesh.vertices.shape[0]
+
+    # custom sub-divide routine
+    subDivide(mesh)
 
     meshFine = pymesh.subdivide(mesh, order = subdiv, method = "simple")
     #print("ori_face_index:", meshFine.get_attribute("ori_face_index"))
@@ -167,6 +377,7 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
 #}}}
 
 
+#{{{ extend mesh
 def extendMesh(X, Tri, layers, holes):
     """Extend the mesh with layers of new triangles."""
 
@@ -330,7 +541,7 @@ def extendMesh(X, Tri, layers, holes):
     print("Extended mesh has {:d} vertices and {:d} faces.".format(X.shape[0], Tri.shape[0]))
 
     return X, Tri
-
+#}}}
 
 # main function
 def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):

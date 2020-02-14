@@ -23,6 +23,7 @@ def gradient(X, Tri, scalar, at_vertices = True, magnitude_stats = True):
        * for N-vertex mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields.
     '''
 
+    print("[WARNING]: the conversion from gradients at face centres to gradients at vertices is not yet weighted by area...")
 
     #{{{ create mesh attributes
 

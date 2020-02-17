@@ -29,15 +29,125 @@ def fitPlaneLSTSQ(XYZ):
 #}}}
 
 
-#{{{ calculate eigenvalue gradients
+#{{{ NEW!!! calculate eigenvalue gradients
 
-def gradientEigenvectors(meshFine, N, V):
+def NEWgradientEigenvectors(X, Tri, vertsInFace, N, V):
     """
         N : meshFine[0:N] are vertices of origianl mesh
+        
+        * first column of vertsInFace is the centroid, because of how I constructed vertsInFace
+
+        SOLVING A CUBIC POLYNOMIAL FIT TO THE EIGENVALUES OF EACH TRIANGLE...
+
+        Make thew A matrix of features
+        f(x,y,z) = f0 + ax + by + cz +
+                      + dxx + eyy + fzz + gxy + hyz + izx
+                      + jxxx + kyyy + lzzz + mxxy + nxxz + oyyz + pyyx + qzzx + rzzy + sxyz 
+        df/dx = a + 2dx + gy + iz + 3jxx + 2mxy + 2nxz + pyy + qzz + syz
+        df/dy = b + 2ey + gx + hz + 3kyy + mxx + 2oyz + 2pyx + rzz + sxz
+        df/dz = c + 2fz + hy + ix + 3lzz + nxx + oyy + 2qzx + 2rzy + sxy
+
     """
 
     print("Calculating gradient of eigenfunctions...")
 
+    # FIXME: only need to do for original faces not in the extended mesh... only need to subDivide original faces too?
+
+    gradV = np.empty([3, V.shape[1], Tri.shape[0]])
+
+    for face, vInF in enumerate(vertsInFace):
+
+        #print(face + 1, "/", len(vertsInFace))
+        #print("vInF:\n", vInF)
+        v = V[vInF]
+        #print("eigenfuncs:\n", v) # each column is a different eigenfunction
+
+        # we'll make the transpose of A first because it's easier
+        # -------------------------------------------------------
+
+        coords = X[vInF].T
+        #print("coords:\n", coords) # coordinates of each vertex for the subdivided triangle
+
+        # linear terms
+        one = np.ones(10) # f0
+        x = coords[0] # a
+        y = coords[1] # b
+        z = coords[2] # c
+
+        # quadratic terms
+        xx = coords[0]*coords[0] # d
+        yy = coords[1]*coords[1] # e
+        zz = coords[2]*coords[2] # f
+        xy = coords[0]*coords[1] # g
+        yz = coords[1]*coords[2] # h
+        zx = coords[2]*coords[0] # i
+
+        # cubic terms
+        xxx = coords[0]*coords[0]*coords[0] # j
+        yyy = coords[1]*coords[1]*coords[1] # k
+        zzz = coords[2]*coords[2]*coords[2] # l
+
+        xxy = coords[0]*coords[0]*coords[1] # m
+        xxz = coords[0]*coords[0]*coords[2] # n
+        yyz = coords[1]*coords[1]*coords[2] # o
+        yyx = coords[1]*coords[1]*coords[0] # p
+        zzx = coords[2]*coords[2]*coords[0] # q
+        zzy = coords[2]*coords[2]*coords[1] # r
+        xyz = coords[0]*coords[1]*coords[2] # s
+
+        # stack the features together and reshape properly
+        A = np.vstack([one,x,y,z,xx,yy,zz,xy,yz,zx,xxx,yyy,zzz,xxy,xxz,yyz,yyx,zzx,zzy,xyz]).reshape(-1, 10).T
+        #print("A matrix:", A)
+        #print("Rank of A:", np.linalg.matrix_rank(A))
+
+        coeffs = np.linalg.lstsq(A, v, rcond = False)[0]
+        f0, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s = coeffs
+        #print("coeffs:", coeffs)
+
+        # vertices for centroids
+        x, y, z = x[0], y[0], z[0]
+        xx, yy, zz, xy, yz, zx = xx[0], yy[0], zz[0], xy[0], yz[0], zx[0] 
+        xxx, yyy, zzz, xxy, xxz, yyz, yyx, zzx, zzy, xyz = xxx[0], yyy[0], zzz[0], xxy[0], xxz[0], yyz[0], yyx[0], zzx[0], zzy[0], xyz[0]
+
+        #print("Real v[c]:", v[0])
+
+        # check that the function is fit at the centroid
+        centroid_f = f0 + a*x + b*y + c*z + d*xx + e*yy + f*zz + g*xy + h*yz + i*zx + j*xxx + k*yyy + l*zzz + m*xxy + n*xxz + o*yyz + p*yyx + q*zzx + r*zzy + s*xyz
+        #print("Predict:  ", centroid_f)
+
+        # derivatives for every eigenfunction
+        dfdx = a + 2*d*x + g*y + i*z + 3*j*xx + 2*m*xy + 2*n*zx + p*yy + q*zz + s*yz
+        dfdy = b + 2*e*y + g*x + h*z + 3*k*yy + m*xx + 2*o*yz + 2*p*xy + r*zz + s*zx
+        dfdz = c + 2*f*z + h*y + i*x + 3*l*zz + n*xx + o*yy + 2*q*zx + 2*r*yz + s*xy
+
+        #print("dfdx", dfdx)
+        #print("dfdy", dfdy)
+        #print("dfdz", dfdz)
+
+        # need to stack gradV as [3, M, centroids]
+        gradV[0,:,face] = dfdx
+        gradV[1,:,face] = dfdy
+        gradV[2,:,face] = dfdz
+
+        #input()
+
+    
+    return gradV
+
+#}}}
+
+
+#{{{ calculate eigenvalue gradients
+
+def gradientEigenvectors(X, Tri, vertsInFace, N, V):
+    """
+        N : meshFine[0:N] are vertices of origianl mesh
+        
+        * first column of vertsInFace is the centroid, because of how I constructed vertsInFace
+    """
+
+    print("Calculating gradient of eigenfunctions...")
+    meshFine = pymesh.form_mesh(X, Tri)
     meshFine.enable_connectivity()
 
     #{{{ create mesh attributes
@@ -133,6 +243,7 @@ def gradientEigenvectors(meshFine, N, V):
 #}}}
 
 
+#{{{ subDivide each face into 9 triangles
 def subDivide(mesh):
     """My custom subdivide function.
 
@@ -157,23 +268,14 @@ def subDivide(mesh):
  
     X = mesh.vertices
 
-    # face IDs
-    mesh.add_attribute("face_index")
-    IDs = mesh.get_attribute("face_index").astype(int)
-
     # face centroids i.e. #
     # ---------------------
     mesh.add_attribute("face_centroid")
     centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
-
-    print("IDs shape:", IDs.shape)
     print("centroids shape:", centroids.shape)
-
 
     # edges pairs i.e. +
     # ------------------
-    # when I come to need these values, I will need to call them up in anti-clockwise order...
-
     __, edges = pymesh.mesh_to_graph(mesh)
     edgePairs = np.zeros([edges.shape[0],2,3])
     print("edgePairs.shape:", edgePairs.shape)
@@ -187,89 +289,41 @@ def subDivide(mesh):
         edgePairs[a] = ep
 
     
-    # need to give these new vertices an ID
-    # -------------------------------------
-    # original vertices have original IDs
-    # centroid vertices have X.shape[0] + centroidIDs
-    # edge vertices have X.shape[0] + centroidIDs.shape[0] + edgePairs.flatten().reshape(-1,3)IDs
-    # NOTE: I cannot make the list on the fly because many vertices are reused...
-
-
-    # new edge list:
+    # create new vertex array
     XN = X.shape[0]
     CN = centroids.shape[0]
     newX = np.vstack([X, centroids, edgePairs.flatten().reshape(-1, 3)])
 
-    #np.savetxt("/tmp/newX.txt", newX)
-    #pymesh.save_mesh("/tmp/mesh.stl", mesh, ascii=True);
-#    input("[WAIT]")
-
 
     # stitch all the points together
     # ------------------------------
+    # original vertices have original IDs
+    # centroid vertices have X.shape[0] + centroidIDs
+    # edge vertices have X.shape[0] + centroidIDs.shape[0] + edgePairs.flatten().reshape(-1,3)IDs
+
 
     print("Stitching together a new mesh...")
 
     newTri = []
+    vertsInFace = [] # for each original face that we subdivide, make a note of all vertices in new face
 
     for idx, tri in enumerate(mesh.faces):
     
-        #print("\n------ {:d} ------".format(idx))
-        #print("tri:", tri)
-
-
-        # centroid for this triangle
-        c = centroids[idx]
-        #print("c:", c)
-        # should also be here:
+        # centroid index into newX for this triangle
         cIdx = XN + idx
-        cc = newX[cIdx] # NOTE: XN + idx is the index into newX that we are interested in
-        #print("cc:", cc)
-
-        # which edges belonging to this triangle
-        #whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
-        #print("edge IDs:", whichEdges)
-        #print("edges:", edges[whichEdges])        
-
+        vInF = [cIdx] # NOTE: record first vertex in this new face as the centroid
+        
+        # which edges belong to this triangle
         whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
-        #print("whichEdges:", whichEdges)
 
-        pairs = edgePairs[whichEdges].flatten().reshape(-1,3) # this gets me the coordinates of + from edgePairs
-        #print("pairs:", pairs)
+        # this gets me the coordinates of + from edgePairs
+        #pairs = edgePairs[whichEdges].flatten().reshape(-1,3)
 
-        # TODO: indices into newX of edge points, which is what we want
+        # indices into newX of all new points on edges
         pair1Idx_a, pair1Idx_b = XN + CN + 2*whichEdges[0], XN + CN + 2*whichEdges[0] + 1
         pair2Idx_a, pair2Idx_b = XN + CN + 2*whichEdges[1], XN + CN + 2*whichEdges[1] + 1
         pair3Idx_a, pair3Idx_b = XN + CN + 2*whichEdges[2], XN + CN + 2*whichEdges[2] + 1
-
-
-        # reorder the pairs to go around the triangle anti-clockwise
-        # doesn't work because the edgepairs are not in any particular order
-        #if norm(newX[tri[0]] - newX[pair1Idx_a]) > norm(newX[tri[0]] - newX[pair1Idx_b]):
-        #    pair1Idx_a, pair1Idx_b = pair1Idx_b, pair1Idx_a
-        #if norm(newX[tri[1]] - newX[pair2Idx_a]) > norm(newX[tri[1]] - newX[pair2Idx_b]):
-        #    pair2Idx_a, pair2Idx_b = pair2Idx_b, pair2Idx_a
-        #if norm(newX[tri[2]] - newX[pair3Idx_a]) > norm(newX[tri[2]] - newX[pair3Idx_b]):
-        #    pair3Idx_a, pair3Idx_b = pair3Idx_b, pair3Idx_a
-
-
-        pairList = [pair1Idx_a , pair1Idx_b, pair2Idx_a , pair2Idx_b, pair3Idx_a , pair3Idx_b]
-        pair1 = newX[ [pair1Idx_a , pair1Idx_b] ]
-        pair2 = newX[ [pair2Idx_a , pair2Idx_b] ]
-        pair3 = newX[ [pair3Idx_a , pair3Idx_b] ]
-        pairs = np.vstack([pair1, pair2, pair3])
-        #print("pairs:", pairs)
-
-        # sanity check figure of the retrieved points
-        #fig = plt.figure()
-        #ax = Axes3D(fig)
-        #ax.scatter(newX[tri][:,0], newX[tri][:,1], newX[tri][:,2], c = np.arange(3), cmap = "jet") #, vmin = MIN, vmax = MAX)
-        #ax.scatter(cc[0], cc[1], cc[2], color = "black") #, vmin = MIN, vmax = MAX)
-        #ax.scatter(pairs[:,0], pairs[:,1], pairs[:,2], c = np.arange(pairs.shape[0]), cmap = "jet")
-        #plt.show()
-
-
-        # TODO: connect the points together properly by updating newTri
+        pairList = np.array([[pair1Idx_a , pair1Idx_b], [pair2Idx_a , pair2Idx_b], [pair3Idx_a , pair3Idx_b]], dtype = np.int32)
 
         # connect # to +
         newTri.append( [ cIdx, pair1Idx_a, pair1Idx_b  ] )
@@ -277,55 +331,39 @@ def subDivide(mesh):
         newTri.append( [ cIdx, pair3Idx_a, pair3Idx_b  ] )
 
         # consider the two nearest vertices + to each corner o;
-        # FIXME: this does not always becaus might pick points on same edge! Need closest on each edge, then two closest of those
-        # FIXME: can probably do the cdist in a single move instead of looping over corner vertices
         for v in tri:
 
-            # FIXME: even this does not quite work, as sometimes connecting edge and opposite edge have the two closest points
-            #        * if I new the edge for each pair, I can keep only the two connecting ones
-
-            #print("v:", v)
-            #print("edges:", edges[whichEdges])
-            #print("in:", np.isin(edges[whichEdges], v).any(axis = 1) )
-            #input()
+            # check which edges are connected to current vertex v
             connect = np.isin(edges[whichEdges], v).any(axis = 1)
 
-            dists = cdist(newX[v][None,:], pairs).reshape(-1,2)
-            #print("dists:", dists)
-            d = np.array([0,2,4])[connect] + np.argmin(dists, axis = 1)[connect]
-            #print("d:", d)
-            d = d[ np.argsort(dists.flatten()[d]) ] # FIXME: only need first two
-            #print("dists 2:", dists.flatten()[d])
+            # so whichPair tells me how to index pairList if pairList had been shaped differently...
+            whichPair = np.argmax(edges[whichEdges][connect] == v, axis = 1)
+
+            # get the index for the correct p in each pair connected to vertex v
+            res = pairList[connect, whichPair]
 
             # connect corner o to these found points +
-            newTri.append( [v, pairList[d[0]], pairList[d[1]] ] )
+            newTri.append( [v, res[0], res[1]] )
+
             # connect centre # to these found points +
-            newTri.append( [cIdx, pairList[d[0]], pairList[d[1]] ] )
+            newTri.append( [cIdx, res[0], res[1]] )
 
+            # update list of verts in new subdivided face
+            vInF.extend([v, res[0], res[1]])
+        
+        #print("vInF:", vInF)
+        #input()
+        vertsInFace.append(vInF)
 
-            #near1 = np.argpartition(cdist(newX[v][None,:], newX[pairList]), 2)[0,0:2]
-            #print("near1:", near1)
-            #near1 = [v] + pairList[near1[0]] + pairList[near1[1]]
-            # connect corner o to these found points +
-            #newTri.append( [v, pairList[near1[0]], pairList[near1[1]] ] )
-            # connect centre # to these found points +
-            #newTri.append( [cIdx, pairList[near1[0]], pairList[near1[1]] ] )
-
-        #print("so far...")
-        #print(newTri)
-
+    # create new array
     newTri = np.array(newTri, dtype = np.int32)
 
-    #NEWMESH = pymesh.form_mesh(newX, newTri)
-    #pymesh.save_mesh("/tmp/meshNew.stl", NEWMESH, ascii=True);
-    input("Done!")
-
-    return newX, newTri
-        
+    return newX, newTri, vertsInFace
+#}}}
 
 
 #{{{ solve eigenvalue problem for mesh
-def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2): 
+def LaplacianEigenpairs(X, Tri, num = 2**8): 
 
     print("Get {:d} eigenfunctions with smallest eigenvalues".format(num))
 
@@ -337,10 +375,12 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
     N = mesh.vertices.shape[0]
 
     # custom sub-divide routine
-    subDivide(mesh)
+    #subDivide(mesh)
 
-    meshFine = pymesh.subdivide(mesh, order = subdiv, method = "simple")
+    #meshFine = pymesh.subdivide(mesh, order = subdiv, method = "simple")
     #print("ori_face_index:", meshFine.get_attribute("ori_face_index"))
+
+    meshFine = mesh # NOTE: doing this outside of function
 
     print("  Calculating Laplacian on atrial mesh using direct pyMesh routine")
 
@@ -354,8 +394,6 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
 
     Q, V = np.real(Q), np.real(V) # complex part appears to be zero
     Q[Q < 0] = 0.0 # NOTE: these negative values are basically zero...
-
-    gradEigen = gradientEigenvectors(meshFine, mesh.vertices.shape[0], V)
 
     # attempt gradient calculation
 #    G = assembler.assemble("gradient");
@@ -372,7 +410,7 @@ def LaplacianEigenpairs(X, Tri, num = 256, subdiv = 2):
     # check if orthogonal..
     #print("checking orthonormal"); check = V.T.dot((V));  imShow(check)
 
-    return Q, V, gradEigen
+    return Q, V
 
 #}}}
 
@@ -543,6 +581,7 @@ def extendMesh(X, Tri, layers, holes):
     return X, Tri
 #}}}
 
+
 # main function
 def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):
 
@@ -551,10 +590,20 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):
     # extend the mesh
     X, Tri = extendMesh(X, Tri, layers, holes)
 
-    Q, V, gradV = LaplacianEigenpairs(X, Tri, num = num, subdiv = subdiv)
+    # subdivide the mesh
+    mesh = pymesh.form_mesh(X, Tri)
+    newX, newTri, vertsInFace = subDivide(mesh)
+
+    # solve eigenproblem on subdivided mesh
+    Q, V = LaplacianEigenpairs(newX, newTri, num = num)
+    
+    # get the gradients at the centroids of the original mesh
+    meshFine = pymesh.form_mesh(newX, newTri)
+    gradV = NEWgradientEigenvectors(newX, newTri, vertsInFace, mesh.vertices.shape[0], V)
 
     # keep values only for original (non-extended) mesh vertices
-    V, gradV = V[0:original_size], gradV[0:original_size,:,:]
+    # FIXME: which values am I keeping?
+    #V, gradV = V[0:original_size], gradV[0:original_size,:,:]
 
     return Q, V, gradV
 

@@ -101,6 +101,7 @@ class AbstractModel(ABC):
             return _wrapper
     #}}}
 
+    #{{{ everything in common: init, del, reset, and abstract methods
     def __init__(self, X, Tri, Q, V, gradV):
         """Initialize class with manifold data."""
         self.X = X
@@ -148,8 +149,10 @@ class AbstractModel(ABC):
         """Return value of the mean function and gradient of mean function."""
         return self.meanFunction, self.grad_meanFunction
 
+    #}}}
     
-    # NOTE: should be an abstract method that is implemented elsewhere
+    # {{{ s2 kernel function
+    # should be an abstract method that is implemented elsewhere
     def s2kernel(self, s2i , s2j, l, grad = False):
         """Covariance between s2 values: fixed as RBF kernel for now."""
            
@@ -162,8 +165,8 @@ class AbstractModel(ABC):
             return Ks2, gradKs2
         else:
             return Ks2, None
+    #}}}
 
-    
     # {{{ data handling including scalings
     def set_data(self, y, yerr, vertex, grady = np.empty([0,3]), gradyerr = np.empty([0]), gradvertex = np.empty([0], dtype = int), s2 = None, grads2 = np.empty([0])):
         """Set data for interpolation, scaled and centred."""
@@ -182,11 +185,11 @@ class AbstractModel(ABC):
         self.s2 = s2
         self.grads2 = grads2
 
-        print(self.y)
+        #print(self.y)
         #print(self.yerr) 
-        print(self.grady)
+        #print(self.grady)
         #print(self.gradyerr)
-        input()
+        #input()
 
         self.reset()
 
@@ -208,7 +211,7 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ covariance matrix
-    def makeCovar(self, type, grad = False):
+    def makeCovar(self, type, grad = False, N = None):
         """Returns the kernel matrix of the specified type.
         
            Arguments:
@@ -239,7 +242,7 @@ class AbstractModel(ABC):
 
         if type == "prediction":
 
-            a = self.V
+            a = self.V if N is None else self.V[0:N]
             b = a
 
             # FIXME: add s2 stuff
@@ -247,9 +250,23 @@ class AbstractModel(ABC):
             b_s2 = a_s2
 
 
-        if type == "cross":
+        if type == "prediction_pointwise":
+            # NOTE: exception, just calculate pointwise variance for K(X*, X*), don't need the cross terms
+
+            SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
 
             a = self.V
+            b = a
+
+            temp = (SD*a*b).sum(axis = 1)
+
+            return self.HP[1]*temp
+
+
+        if type == "cross":
+
+            a = self.V if N is None else self.V[0:N]
+
             b = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
 
             # FIXME: add s2 stuff
@@ -517,7 +534,7 @@ class AbstractModel(ABC):
 
     #{{{ posterior distribution
     @Decorators.check_posterior_args
-    def posterior(self, s2pred = None):
+    def posterior(self, N = None, s2pred = None):
         """Calculates GP posterior mean and variance and returns *total* posterior mean and square root of pointwise variance
         
            Arguments:
@@ -527,26 +544,42 @@ class AbstractModel(ABC):
            * the returned *total* posterior mean is the sum of the GP posterior mean and the mean function
 
         """
-
-        print("Calculating posterior distribution...")
-
         # FIXME: sort out how s2pred is handled
 
-        # make covariance for data
+        # make covariance matrices
+        if N is None:
+            print("Calculating *pointwise* posterior distribution...")
+            predCov  = self.makeCovar("prediction_pointwise")
+        else:
+            print("Calculating *full* posterior distribution for first {:d} vertices...".format(N))
+            predCov  = self.makeCovar("prediction", N = N)
+
         covTrain = self.makeCovar("training")
-        predCov  = self.makeCovar("prediction")
-        crossCov = self.makeCovar("cross")
+        crossCov = self.makeCovar("cross", N = N)
 
         # NOTE: y must be prepared base on whether there are derivative observations or not
         y = self.y if self.grady is None else np.hstack([self.y, self.grady.flatten()]) 
 
-        # calculate GP posterior
+        # calculate GP posterior mean
         L = linalg.cho_factor(covTrain)
         Ef = crossCov.dot( linalg.cho_solve(L, y) )
-        Vf = predCov - crossCov.dot( linalg.cho_solve(L, crossCov.T) )
-        self.post_mean, self.post_var = Ef, Vf
+        self.post_mean = Ef
 
-        return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(np.diagonal(Vf)), std = True)
+        # calculate GP posterior variance
+        if N is None:
+            temp = linalg.cho_solve(L, crossCov.T)
+            temp = np.einsum("ij, ji -> i", crossCov, temp) # if I transpose the K^-1 y part, will the cross term only be pointwise?
+            Vf = predCov - temp
+
+            return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(Vf), std = True)
+
+        else:
+            
+            Vf = predCov - crossCov.dot( linalg.cho_solve(L, crossCov.T) )
+
+            self.post_var = Vf  # NOTE: only saved internal if a full posterior matrix was created, for first N vertices specified by N argument
+
+            return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(np.diagonal(Vf)), std = True)
     #}}}
 
     #{{{ posterior distribution of gradient
@@ -632,22 +665,13 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ posteriorStatistics
-    def gradientStatistics(self, electrodes = False, s2pred = None):
+    def gradientStatistics(self, s2pred = None):
         """Calculate statistics for magnitude of posterior gradients, returns mesh idx and these statistics."""
     
-        
-        if electrodes == False: # all vertices
-            idx = list(range(self.V.shape[0]))
-            prnt = "" # "for all vertices"
-        else:
-            if s2pred is not None: # all electrodes where we have an observation for the s2 we are predicting at
-                idx = self.vertex[self.s2.flatten() == s2pred]
-                prnt = " for all electrodes with observation for s2pred"
-            else:
-                idx = self.vertex # all electrodes
-                prnt = " for all electrodes"
+        # all centroids 
+        idx = list(range(self.gradV.shape[0]))
 
-        print("Calculating posterior distribution gradient magnitudes{:s}...".format(prnt))
+        print("Calculating posterior distribution gradient magnitudes...")
         print("  (statistics: mean, stdev, 9th, 25th, 50th, 75th, 91st percentiles)")
         
         mag_stats = np.empty([len(idx), 7])
@@ -709,6 +733,7 @@ class AbstractModel(ABC):
         plt.show()
     #}}}
 
+#{{{ subclasses for different models
 
 class Matern52(AbstractModel):
     """Model y = GP(x) + e where GP(x) is a manifold GP with Matern52 kernel."""       
@@ -828,4 +853,5 @@ class basisAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplemen
         self.y_mean, self.y_std = np.mean(y), np.std(y)
         self.y, self.yerr = self.scale(y), self.scale(self.yerr, std = True)
 
+#}}}
 

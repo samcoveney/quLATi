@@ -1,2 +1,3 @@
 # quLATi
-Quantifying Uncertainty in Local Activation Time Interpolation
+Quantifying Uncertainty for Local Activation Time Interpolation
+

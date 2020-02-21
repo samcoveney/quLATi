@@ -16,14 +16,12 @@ import pymesh
 
 
 # CV stats function
-def gradient(X, Tri, scalar, at_vertices = True, magnitude_stats = True):
-    '''Calculate gradient of scalar field on every mesh *vertex* (from average of of gradients at mesh elements) for all scaler fields provided.
+def gradient(X, Tri, scalar, magnitude_stats = False):
+    '''Calculate gradient of scalar field on every mesh *face* for all scaler fields provided.
 
        NOTE:
-       * for N-vertex mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields.
+       * for N-vertex F-face mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields to get (F x n) array result.
     '''
-
-    print("[WARNING]: the conversion from gradients at face centres to gradients at vertices is not yet weighted by area...")
 
     #{{{ create mesh attributes
 
@@ -87,27 +85,32 @@ def gradient(X, Tri, scalar, at_vertices = True, magnitude_stats = True):
 
     #}}}
 
-    
+   
     #{{{ calculate "CVvertexSamples" - CV vector at vertex for each scalar sample
    
-    CVvertexSamples = np.zeros([mesh.vertices.shape[0], scalar.shape[1], 3]) # NOTE: store CV vector for all samples at every vertex
+    # NOTE: I'm not convinced that averaging to vertices is necessarily great for vectors... probably fine for magnitudes though
 
-    for s in range(scalar.shape[1]):
+    if False:
 
-        CV = CVfaceSamples[:,s,:]
+        CVvertexSamples = np.zeros([mesh.vertices.shape[0], scalar.shape[1], 3]) # NOTE: store CV vector for all samples at every vertex
 
-        vertexCVx = pymesh.convert_to_vertex_attribute(mesh, CV[:,0]).reshape([-1,1])
-        vertexCVy = pymesh.convert_to_vertex_attribute(mesh, CV[:,1]).reshape([-1,1])
-        vertexCVz = pymesh.convert_to_vertex_attribute(mesh, CV[:,2]).reshape([-1,1])
+        for s in range(scalar.shape[1]):
 
-        CVvertexSamples[:,s,:] = np.hstack([vertexCVx, vertexCVy, vertexCVz])
+            CV = CVfaceSamples[:,s,:]
+
+            vertexCVx = pymesh.convert_to_vertex_attribute(mesh, CV[:,0]).reshape([-1,1])
+            vertexCVy = pymesh.convert_to_vertex_attribute(mesh, CV[:,1]).reshape([-1,1])
+            vertexCVz = pymesh.convert_to_vertex_attribute(mesh, CV[:,2]).reshape([-1,1])
+
+            CVvertexSamples[:,s,:] = np.hstack([vertexCVx, vertexCVy, vertexCVz])
 
     #}}}
 
 
     #{{{ decide upon and return results
 
-    grad_results = CVvertexSamples if at_vertices else CVfaceSamples
+    #grad_results = CVvertexSamples if at_vertices else CVfaceSamples
+    grad_results = CVfaceSamples
 
     if magnitude_stats == False:
 

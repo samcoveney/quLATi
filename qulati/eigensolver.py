@@ -31,7 +31,7 @@ def fitPlaneLSTSQ(XYZ):
 
 #{{{ NEW!!! calculate eigenvalue gradients
 
-def NEWgradientEigenvectors(X, Tri, vertsInFace, N, V):
+def NEWgradientEigenvectors(X, Tri, vertsInFace, V):
     """
         N : meshFine[0:N] are vertices of origianl mesh
         
@@ -53,83 +53,94 @@ def NEWgradientEigenvectors(X, Tri, vertsInFace, N, V):
 
     # FIXME: only need to do for original faces not in the extended mesh... only need to subDivide original faces too?
 
-    gradV = np.empty([3, V.shape[1], Tri.shape[0]])
+    gradV = np.empty([Tri.shape[0], 3, V.shape[1]])
 
     for face, vInF in enumerate(vertsInFace):
 
-        #print(face + 1, "/", len(vertsInFace))
-        #print("vInF:\n", vInF)
-        v = V[vInF]
-        #print("eigenfuncs:\n", v) # each column is a different eigenfunction
+        # eigenfunctions at vertices in this original face
+        phi = V[vInF]
 
-        # we'll make the transpose of A first because it's easier
-        # -------------------------------------------------------
+        # basis vectors of triangle
+        points = X[[ vInF[i] for i in [0,1,4] ]]
+        v21 = points[1] - points[0]
+        v32 = points[2] - points[1]
 
-        coords = X[vInF].T
+        n = np.cross(v21, v32)
+        n = n / np.linalg.norm(n)
+        v = v21 / np.linalg.norm(v21)
+        u = np.cross(n, v)
+
+        # change of basis matrix
+        R = np.hstack([u,v,n]).reshape(-1,3).T
+        
+        # all the points in the face rotated down into 2D
+        points = X[vInF].dot(R)
+        #print("points:", points)
+
+        # plot to check
+        #fig = plt.figure()
+        #ax = Axes3D(fig)
+        #ax.scatter(points[:,0], points[:,1], points[:,2], c = phi[:,1], cmap = "jet")
+        #plt.show()
+
+
+        # fit cubic polynomial model to eigenfunction values
+        # --------------------------------------------------
+
+        coords = points.T
         #print("coords:\n", coords) # coordinates of each vertex for the subdivided triangle
 
         # linear terms
         one = np.ones(10) # f0
         x = coords[0] # a
         y = coords[1] # b
-        z = coords[2] # c
 
         # quadratic terms
         xx = coords[0]*coords[0] # d
         yy = coords[1]*coords[1] # e
-        zz = coords[2]*coords[2] # f
         xy = coords[0]*coords[1] # g
-        yz = coords[1]*coords[2] # h
-        zx = coords[2]*coords[0] # i
 
         # cubic terms
         xxx = coords[0]*coords[0]*coords[0] # j
         yyy = coords[1]*coords[1]*coords[1] # k
-        zzz = coords[2]*coords[2]*coords[2] # l
-
         xxy = coords[0]*coords[0]*coords[1] # m
-        xxz = coords[0]*coords[0]*coords[2] # n
-        yyz = coords[1]*coords[1]*coords[2] # o
         yyx = coords[1]*coords[1]*coords[0] # p
-        zzx = coords[2]*coords[2]*coords[0] # q
-        zzy = coords[2]*coords[2]*coords[1] # r
-        xyz = coords[0]*coords[1]*coords[2] # s
 
         # stack the features together and reshape properly
-        A = np.vstack([one,x,y,z,xx,yy,zz,xy,yz,zx,xxx,yyy,zzz,xxy,xxz,yyz,yyx,zzx,zzy,xyz]).reshape(-1, 10).T
-        #print("A matrix:", A)
-        #print("Rank of A:", np.linalg.matrix_rank(A))
+        #               f0   a  b  c   d   e   f    g    h    i
+        A = np.vstack([ one, x, y, xx, yy, xy, xxx, yyy, xxy, yyx]).reshape(-1, 10).T
 
-        coeffs = np.linalg.lstsq(A, v, rcond = False)[0]
-        f0, a, b, c, d, e, f, g, h, i, j, k, l, m, n, o, p, q, r, s = coeffs
+        coeffs = np.linalg.lstsq(A, phi, rcond = False)[0]
+        f0, a, b, c, d, e, f, g, h, i = coeffs
         #print("coeffs:", coeffs)
 
         # vertices for centroids
-        x, y, z = x[0], y[0], z[0]
-        xx, yy, zz, xy, yz, zx = xx[0], yy[0], zz[0], xy[0], yz[0], zx[0] 
-        xxx, yyy, zzz, xxy, xxz, yyz, yyx, zzx, zzy, xyz = xxx[0], yyy[0], zzz[0], xxy[0], xxz[0], yyz[0], yyx[0], zzx[0], zzy[0], xyz[0]
+        x, y = x[0], y[0]
+        xx, yy, xy = xx[0], yy[0], xy[0] 
+        xxx, yyy, xxy, yyx = xxx[0], yyy[0], xxy[0], yyx[0]
 
-        #print("Real v[c]:", v[0])
 
         # check that the function is fit at the centroid
-        centroid_f = f0 + a*x + b*y + c*z + d*xx + e*yy + f*zz + g*xy + h*yz + i*zx + j*xxx + k*yyy + l*zzz + m*xxy + n*xxz + o*yyz + p*yyx + q*zzx + r*zzy + s*xyz
+        centroid_f = f0 + a*x + b*y + c*xx + d*yy + e*xy + f*xxx + g*yyy + h*xxy + i*yyx
+        #print("Real phi[c]:", phi[0])
         #print("Predict:  ", centroid_f)
 
         # derivatives for every eigenfunction
-        dfdx = a + 2*d*x + g*y + i*z + 3*j*xx + 2*m*xy + 2*n*zx + p*yy + q*zz + s*yz
-        dfdy = b + 2*e*y + g*x + h*z + 3*k*yy + m*xx + 2*o*yz + 2*p*xy + r*zz + s*zx
-        dfdz = c + 2*f*z + h*y + i*x + 3*l*zz + n*xx + o*yy + 2*q*zx + 2*r*yz + s*xy
+        dfdx = a + 2*c*x + e*y + 3*f*xx + 2*h*xy + i*yy
+        dfdy = b + 2*d*y + e*x + 3*g*yy + h*xx + 2*i*xy
+        dfdz = np.zeros([V.shape[1]])
 
-        #print("dfdx", dfdx)
-        #print("dfdy", dfdy)
-        #print("dfdz", dfdz)
+        # rotate 2D gradients back into 3D
+        # --------------------------------
+
+        gradPhi = np.hstack([dfdx, dfdy, dfdz]).reshape(-1,V.shape[1]).T
+        gradPhi = np.einsum("ij, jk -> ik", gradPhi, np.linalg.inv(R)) 
 
         # need to stack gradV as [3, M, centroids]
-        gradV[0,:,face] = dfdx
-        gradV[1,:,face] = dfdy
-        gradV[2,:,face] = dfdz
+        gradV[face, 0, :] = gradPhi[:,0]
+        gradV[face, 1, :] = gradPhi[:,1]
+        gradV[face, 2, :] = gradPhi[:,2]
 
-        #input()
 
     
     return gradV
@@ -244,7 +255,7 @@ def gradientEigenvectors(X, Tri, vertsInFace, N, V):
 
 
 #{{{ subDivide each face into 9 triangles
-def subDivide(mesh):
+def subDivide(X, Tri):
     """My custom subdivide function.
 
        o : original vertices
@@ -266,7 +277,7 @@ def subDivide(mesh):
 
     """
  
-    X = mesh.vertices
+    mesh = pymesh.form_mesh(X, Tri)
 
     # face centroids i.e. #
     # ---------------------
@@ -585,26 +596,31 @@ def extendMesh(X, Tri, layers, holes):
 # main function
 def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):
 
-    original_size = X.shape[0]
+    orig_num_verts = X.shape[0]
+    orig_num_faces = Tri.shape[0]
 
     # extend the mesh
     X, Tri = extendMesh(X, Tri, layers, holes)
+    extended_num_verts = X.shape[0]
 
     # subdivide the mesh
-    mesh = pymesh.form_mesh(X, Tri)
-    newX, newTri, vertsInFace = subDivide(mesh)
+    newX, newTri, vertsInFace = subDivide(X, Tri)
 
     # solve eigenproblem on subdivided mesh
     Q, V = LaplacianEigenpairs(newX, newTri, num = num)
     
     # get the gradients at the centroids of the original mesh
-    meshFine = pymesh.form_mesh(newX, newTri)
-    gradV = NEWgradientEigenvectors(newX, newTri, vertsInFace, mesh.vertices.shape[0], V)
+    #meshFine = pymesh.form_mesh(newX, newTri)
+    gradV = NEWgradientEigenvectors(newX, newTri, vertsInFace, V)
 
     # keep values only for original (non-extended) mesh vertices
     # FIXME: which values am I keeping?
     #V, gradV = V[0:original_size], gradV[0:original_size,:,:]
 
-    return Q, V, gradV
+    # return V for original vertices + centroids, gradV was only calculated for centroids anyway
+
+    V = np.vstack( [ V[0:orig_num_verts] , V[extended_num_verts:extended_num_verts+orig_num_faces] ] )
+
+    return Q, V[0:orig_num_verts+orig_num_faces], gradV[0:orig_num_faces, :, :], newX[extended_num_verts:extended_num_verts+orig_num_faces]
 
 

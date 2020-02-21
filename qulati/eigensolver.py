@@ -8,6 +8,7 @@ import pymesh
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
+import numba
 
 #{{{ fit a 2D plane to a set of 3D points using lstsq
 def fitPlaneLSTSQ(XYZ):
@@ -255,7 +256,9 @@ def gradientEigenvectors(X, Tri, vertsInFace, N, V):
 
 
 #{{{ subDivide each face into 9 triangles
-def subDivide(X, Tri):
+# FIXME: to work fast I need to preallocate all the array
+@numba.jit(nopython=True)
+def subDivide(X, Tri, edges, centroids):
     """My custom subdivide function.
 
        o : original vertices
@@ -277,23 +280,20 @@ def subDivide(X, Tri):
 
     """
  
-    mesh = pymesh.form_mesh(X, Tri)
-
     # face centroids i.e. #
     # ---------------------
-    mesh.add_attribute("face_centroid")
-    centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
     print("centroids shape:", centroids.shape)
 
     # edges pairs i.e. +
     # ------------------
-    __, edges = pymesh.mesh_to_graph(mesh)
-    edgePairs = np.zeros([edges.shape[0],2,3])
+    edgePairs = np.zeros((edges.shape[0],2,3), dtype = np.float64)
     print("edgePairs.shape:", edgePairs.shape)
     
     mul = np.array([[1./3.], [2./3.]])
 
-    for a, edge in enumerate(edges):
+    #for a, edge in enumerate(edges):
+    for a in range(edges.shape[0]):
+        edge = edges[a]
 
         e = X[edge[1]] - X[edge[0]]  # edge vector  o ------------ o
         ep = X[edge[0]] + e*mul  # two new points   o -- + -- + -- o
@@ -303,7 +303,11 @@ def subDivide(X, Tri):
     # create new vertex array
     XN = X.shape[0]
     CN = centroids.shape[0]
-    newX = np.vstack([X, centroids, edgePairs.flatten().reshape(-1, 3)])
+    #newX = np.vstack([X, centroids, edgePairs.flatten().reshape(-1, 3)])
+    newX = np.empty((X.shape[0] + centroids.shape[0] + edgePairs.shape[0]*2, 3), dtype = np.float64)
+    newX[0:X.shape[0]] = X
+    newX[X.shape[0]:X.shape[0]+centroids.shape[0]] = centroids
+    newX[X.shape[0]+centroids.shape[0]:] = edgePairs.flatten().reshape(-1, 3)
 
 
     # stitch all the points together
@@ -318,14 +322,19 @@ def subDivide(X, Tri):
     newTri = []
     vertsInFace = [] # for each original face that we subdivide, make a note of all vertices in new face
 
-    for idx, tri in enumerate(mesh.faces):
+    #for idx, tri in enumerate(mesh.faces):
+    for idx in range(Tri.shape[0]):
+    
+        tri = Tri[idx]
     
         # centroid index into newX for this triangle
         cIdx = XN + idx
         vInF = [cIdx] # NOTE: record first vertex in this new face as the centroid
         
         # which edges belong to this triangle
-        whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
+        #whichEdges = np.argwhere( np.isin(edges, tri).sum(axis = 1) == 2 ).flatten()
+        whichEdges = np.argwhere( np.sum( (edges == tri[0]) + (edges == tri[1]) + (edges == tri[2]) , axis = 1 ) == 2 ).flatten()
+
 
         # this gets me the coordinates of + from edgePairs
         #pairs = edgePairs[whichEdges].flatten().reshape(-1,3)
@@ -345,13 +354,17 @@ def subDivide(X, Tri):
         for v in tri:
 
             # check which edges are connected to current vertex v
-            connect = np.isin(edges[whichEdges], v).any(axis = 1)
+            #connect = np.isin(edges[whichEdges], v).any(axis = 1)
+            connect =  np.sum( edges[whichEdges] == v, axis = 1) == 1
 
             # so whichPair tells me how to index pairList if pairList had been shaped differently...
-            whichPair = np.argmax(edges[whichEdges][connect] == v, axis = 1)
+            
+            #whichPair = np.argmax( (edges[whichEdges][connect] == v).astype(np.int32), axis = 1)
+            whichPair = [ np.argmax( (edges[whichEdges][connect][0] == v) ) , np.argmax( (edges[whichEdges][connect][1] == v) ) ]
 
             # get the index for the correct p in each pair connected to vertex v
-            res = pairList[connect, whichPair]
+            #res = pairList[connect, whichPair]
+            res = [ pairList[connect][0, whichPair[0]] , pairList[connect][1, whichPair[1]] ]
 
             # connect corner o to these found points +
             newTri.append( [v, res[0], res[1]] )
@@ -604,7 +617,13 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10, subdiv = 2):
     extended_num_verts = X.shape[0]
 
     # subdivide the mesh
-    newX, newTri, vertsInFace = subDivide(X, Tri)
+    # NOTE: moved the pymesh routines outside subDivide
+    mesh = pymesh.form_mesh(X, Tri)
+    __, edges = pymesh.mesh_to_graph(mesh)
+    mesh.add_attribute("face_centroid")
+    centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
+
+    newX, newTri, vertsInFace = subDivide(X, Tri, edges, centroids)
 
     # solve eigenproblem on subdivided mesh
     Q, V = LaplacianEigenpairs(newX, newTri, num = num)

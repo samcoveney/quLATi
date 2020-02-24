@@ -478,6 +478,7 @@ class AbstractModel(ABC):
             self.nugget_train = False
 
         # gradnugget
+        if self.gradvertex.shape[0] == 0: gradnugget = 0.0 
         self.gradnugget = gradnugget
 
         if gradnugget is None:  # gradnugget not supplied; we must train on gradnugget
@@ -670,10 +671,12 @@ class AbstractModel(ABC):
         # all centroids 
         idx = list(range(self.gradV.shape[0]))
 
-        print("Calculating posterior distribution gradient magnitudes...")
+        print("Calculating posterior distribution gradient magnitudes... (a bit slow...)")
         print("  (statistics: mean, stdev, 9th, 25th, 50th, 75th, 91st percentiles)")
         
         mag_stats = np.empty([len(idx), 7])
+
+        numSamples = 2000
 
         if self.grad_post_mean is not None and self.grad_post_var is not None:
 
@@ -683,10 +686,21 @@ class AbstractModel(ABC):
 
                 mean, var = meanF + self.grad_post_mean[i], self.grad_post_var[i]
 
-                samples = np.random.multivariate_normal(mean, var, size = 2000)
-
+                # slower
+                samples = np.random.multivariate_normal(mean, var, size = numSamples)
                 mag_grad = np.linalg.norm(self.unscale(samples, std = True), axis = 1)
 
+                # faster
+                #stabNug = 1e-12
+                #samples_chol = mean + np.linalg.cholesky( var + np.eye(3)*stabNug ).dot( np.random.standard_normal(size = (3,numSamples)) ).T
+                #mag_grad_chol = np.linalg.norm(self.unscale(samples_chol, std = True), axis = 1)
+
+                # in between speeds
+                #s, v = np.linalg.eigh(var)
+                #samples_eigh = mean + ( v * np.sqrt(s) ).dot( np.random.standard_normal(size = (3,numSamples)) ).T
+                #mag_grad_eigh = np.linalg.norm(self.unscale(samples_eigh, std = True), axis = 1)
+
+                # statistics
                 p = np.percentile(mag_grad, [9, 25, 50, 75, 91])
                 m, s = np.mean(mag_grad), np.std(mag_grad)
                 mag_stats[ii, 0] = m
@@ -696,6 +710,8 @@ class AbstractModel(ABC):
                 if False:
 
                     plt.hist(mag_grad, bins = 30);
+                    #plt.hist(mag_grad_chol, bins = 30, color = "red");
+                    #plt.hist(mag_grad_eigh, bins = 30, color = "green");
                     for pi in p:
                         plt.axvline(pi, color = "pink")
                     plt.axvline(m, color = "red")
@@ -734,6 +750,7 @@ class AbstractModel(ABC):
 
 #{{{ subclasses for different models
 
+#{{{ Matern52 for GP, no mean function
 class Matern52(AbstractModel):
     """Model y = GP(x) + e where GP(x) is a manifold GP with Matern52 kernel."""       
 
@@ -778,8 +795,9 @@ class Matern52(AbstractModel):
         """Set mean function."""
         self.meanFunction = np.array([0])
         self.grad_meanFunction = np.array([[0,0,0]])
+#}}}
 
-
+#{{{ manifold splines for mean, Matern52 GP for residuals
 class splinesAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) are splines on the manifold."""       
 
@@ -811,15 +829,17 @@ class splinesAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplem
         G = self.V[:, 1:].dot(np.diag(1.0/self.Q[1:])).dot(self.V[self.vertex,1:].T)
         self.meanFunction = f0 + beta.dot(G.T)
 
-        gradG = np.einsum( "ijk, li -> klj" , self.gradV[1:, :, :], ((1.0/self.Q[1:])*self.V[self.vertex,1:]) ) 
-        self.grad_meanFunction = np.dot(beta, gradG)
+        #gradG = np.einsum( "ijk, lk -> ijl" , self.gradV[:, :, 1:], ((1.0/self.Q[1:])*self.V[self.vertex,1:]) ) 
+        gradG = np.inner( self.gradV[:, :, 1:], ((1.0/self.Q[1:])*self.V[self.vertex,1:]) )  # faster than above
+        self.grad_meanFunction = gradG.dot(beta)
 
         # rescale y data
         y = self.y - self.meanFunction[self.vertex]
         self.y_mean, self.y_std = np.mean(y), np.std(y)
         self.y, self.yerr = self.scale(y), self.scale(self.yerr, std = True)
+#}}}
 
-
+#{{{ linear model of laplacian eigenfunction, Matern52 GP for residuals
 class basisAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) is regression with eigenfunctions basis.
 
@@ -845,12 +865,13 @@ class basisAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplemen
         plt.plot(beta); plt.show()
 
         self.meanFunction = f0 + np.dot(beta, self.V[:,1:1+num].T)
-        self.grad_meanFunction = np.einsum("i, ijk -> kj" , beta, self.gradV[1:1+num,:,:]) 
+        self.grad_meanFunction = np.inner(beta, self.gradV[:,:,1:1+num])
 
         # rescale y data
         y = self.y - self.meanFunction[self.vertex]
         self.y_mean, self.y_std = np.mean(y), np.std(y)
         self.y, self.yerr = self.scale(y), self.scale(self.yerr, std = True)
+#}}}
 
 #}}}
 

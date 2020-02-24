@@ -68,7 +68,14 @@ class AbstractModel(ABC):
                 errMsg = "\n[ERROR] {:s}: ".format(method.__name__)
                 errRtn = "\n[return] None, None\n"
 
-                s2pred = kwargs["s2pred"] if "s2pred" in kwargs else args[0]
+                #s2pred = kwargs["s2pred"] if "s2pred" in kwargs else args[0]
+                if "s2pred" in kwargs:
+                    s2pred = kwargs["s2pred"]
+                else:
+                    try:
+                        s2pred = args[0]
+                    except:
+                        s2pred = None
 
                 if (s2pred is None) and (self.s2 is not None):
                     print(errMsg + "s2pred not supplied." + errRtn)

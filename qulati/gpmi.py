@@ -286,17 +286,18 @@ class AbstractModel(ABC):
 
         if type  == "grad_grad_prediction":
             
-            print(type)
             # NOTE: exception, do not calclate the full posterior variance for derivative predictions, it is too big! Just pointwise.
             SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-            print("start")
             #temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
             #temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
             #temp = np.einsum('j, ijk -> ijk', SD, self.gradV)
             #temp = np.einsum('ijk, ljk -> kil', temp, self.gradV)
-            temp = np.einsum('k, ijk -> ijk', SD, self.gradV)
+
+            #temp = np.einsum('k, ijk -> ijk', SD, self.gradV)
+            temp = SD * self.gradV
             temp = np.einsum('ijk, ilk -> ijl', temp, self.gradV)
-            print("end... with shape:", temp.shape)
+            #temp = np.inner(temp, self.gradV) # probably correct, but memory error
+
             return self.HP[1]*temp
         
 
@@ -569,6 +570,7 @@ class AbstractModel(ABC):
         if N is None:
             temp = linalg.cho_solve(L, crossCov.T)
             temp = np.einsum("ij, ji -> i", crossCov, temp) # if I transpose the K^-1 y part, will the cross term only be pointwise?
+            #temp = np.inner(crossCov, temp.T) # I'm quite sure this is correct, but memory error for large meshes
             Vf = predCov - temp
 
             return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(Vf), std = True)
@@ -615,12 +617,9 @@ class AbstractModel(ABC):
 
         # zeta = gradKern.dot(linalg.cho_solve(L, gradKern.T)) # probably correct, but causes memory error because large arrays
 
-        print("chosolve...")
         invK = linalg.cho_solve(L, np.identity(covTrain.shape[0]))
-        # zeta = np.einsum('klm , mp , kjp -> klj', gradKern, invK, gradKern) # do in two stages as below; much faster
-        print("einsum 1")
-        zeta = np.einsum('km , pm -> kp', gradKern, invK.T) 
-        print("einsum 2")
+        #zeta = np.einsum('km , pm -> kp', gradKern, invK.T.copy()) 
+        zeta = np.inner(gradKern, invK.T) # much faster than doing einsum above
         zeta = np.einsum('klp , kjp -> klj', zeta.reshape(-1, 3, y.shape[0]), gradKern.reshape(-1, 3, y.shape[0])) # reshape for cross terms on different directions
 
         self.grad_post_var = grad2Kern - zeta

@@ -229,6 +229,9 @@ class AbstractModel(ABC):
 
            NOTES:
            * nugget values passed to the kernel function will be set here depending on type
+           * when using self.s2, currently prediction is only for a single specified s2 called self.s2pred
+           * gradient observations do not work when self.s2 is not None at the moment
+             -> for s2 values for gradient observations, will need to repeat self.grads2 3 times, so that grads2 is supplied for every component of the gradient
         
         """
 
@@ -238,13 +241,13 @@ class AbstractModel(ABC):
             b = a
 
             if self.s2 is not None:
-                # NOTE: may need to repeat 3 times for both s2 and err for the gradient observations
                 a_s2 = np.hstack([self.s2, self.grads2])
             else:
                 a_s2 = None
             b_s2 = a_s2
 
-            err = np.hstack([self.yerr**2 + self.nugget, self.gradyerr.flatten()**2 + self.gradnugget]) # NOTE: error is properly prepared here
+            # NOTE: error is properly prepared here
+            err = np.hstack([self.yerr**2 + self.nugget, self.gradyerr.flatten()**2 + self.gradnugget]) 
 
 
         if type == "prediction":
@@ -252,7 +255,6 @@ class AbstractModel(ABC):
             a = self.V if N is None else self.V[0:N]
             b = a
 
-            # FIXME: add s2 stuff
             a_s2 = None
             b_s2 = a_s2
 
@@ -276,9 +278,13 @@ class AbstractModel(ABC):
 
             b = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
 
-            # FIXME: add s2 stuff
-            a_s2 = None
-            b_s2 = a_s2
+            if self.s2 is not None:
+                a_s2 = np.repeat(self.s2pred, self.V.shape[0]) 
+                b_s2 = np.hstack([self.s2, self.grads2])
+            else:
+                a_s2 = None
+                b_s2 = None
+
 
 
         if type == "grad_cross":
@@ -286,14 +292,18 @@ class AbstractModel(ABC):
             a = self.gradV.reshape(-1,self.V.shape[1])
             b = np.vstack( [ self.V[self.vertex], self.gradV[self.gradvertex,:,:].reshape(-1,self.V.shape[1]) ] )
 
-            # FIXME: add s2 stuff
-            a_s2 = None
-            b_s2 = a_s2
+
+            if self.s2 is not None:
+                a_s2 = np.repeat(self.s2pred, a.shape[0]) 
+                b_s2 = np.hstack([self.s2, self.grads2])
+            else:
+                a_s2 = None
+                b_s2 = None
 
 
         if type  == "grad_grad_prediction":
-            
             # NOTE: exception, do not calclate the full posterior variance for derivative predictions, it is too big! Just pointwise.
+
             SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
             #temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
             #temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
@@ -553,7 +563,9 @@ class AbstractModel(ABC):
            * the returned *total* posterior mean is the sum of the GP posterior mean and the mean function
 
         """
+
         # FIXME: sort out how s2pred is handled
+        self.s2pred = s2pred
 
         # make covariance matrices
         if N is None:
@@ -605,6 +617,8 @@ class AbstractModel(ABC):
            * the GP posterior variance *of gradient* is only calculated pointwise, giving a 3x3 matrix at every vertex
 
         """
+
+        self.s2pred = s2pred
 
         print("Calculating posterior distribution of gradient...")
 
@@ -672,7 +686,7 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ posteriorStatistics
-    def gradientStatistics(self, s2pred = None):
+    def gradientStatistics(self, numSamples = 2000, s2pred = None):
         """Calculate statistics for magnitude of posterior gradients, returns mesh idx and these statistics."""
     
         # all centroids 
@@ -682,8 +696,6 @@ class AbstractModel(ABC):
         print("  (statistics: mean, stdev, 9th, 25th, 50th, 75th, 91st percentiles)")
         
         mag_stats = np.empty([len(idx), 7])
-
-        numSamples = 2000
 
         if self.grad_post_mean is not None and self.grad_post_var is not None:
 

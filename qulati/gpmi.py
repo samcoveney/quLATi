@@ -705,11 +705,14 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ posteriorStatistics
-    def gradientStatistics(self, numSamples = 2000, s2pred = None):
+    def gradientStatistics(self, numSamples = 2000, centIdx = None, s2pred = None):
         """Calculate statistics for magnitude of posterior gradients, returns mesh idx and these statistics."""
     
-        # all centroids 
-        idx = list(range(self.gradV.shape[0]))
+        if centIdx is not None:
+            idx = centIdx
+        else:
+            # all centroids 
+            idx = list(range(self.gradV.shape[0]))
 
         print("Calculating posterior distribution gradient magnitudes... (a bit slow...)")
         print("  (statistics: mean, stdev, 9th, 25th, 50th, 75th, 91st percentiles)")
@@ -841,7 +844,7 @@ class Matern52(AbstractModel):
         """
         
         D = 2  # dimension
-        v = 7.0/2.0  # smoothness
+        v = 3.0/2.0  # smoothness
 
         alpha = (2**D * np.pi**(D/2) * gamma(v + (D/2)) * (2*v)**v) / gamma(v)
         delta = 1.0 / rho**(2*v)

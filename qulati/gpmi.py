@@ -49,6 +49,25 @@ def timeit(f):
     return timed
 #}}}
 
+#{{{ scatter with histograms on axes
+def scatter_hist(x, y, ax, ax_histx, ax_histy):
+    # no labels
+    ax_histx.tick_params(axis="x", labelbottom=False)
+    ax_histy.tick_params(axis="y", labelleft=False)
+
+    # the scatter plot:
+    ax.scatter(x, y)
+
+    # now determine nice limits by hand:
+    binwidth = 0.0025
+    xymax = max(np.max(np.abs(x)), np.max(np.abs(y)))
+    lim = (int(xymax/binwidth) + 1) * binwidth
+
+    bins = np.arange(-lim, lim + binwidth, binwidth)
+    ax_histx.hist(x, bins=bins)
+    ax_histy.hist(y, bins=bins, orientation='horizontal')
+#}}}
+
 #}}}
 
 
@@ -708,16 +727,54 @@ class AbstractModel(ABC):
                 # slower
                 samples = np.random.multivariate_normal(mean, var, size = numSamples)
                 mag_grad = np.linalg.norm(self.unscale(samples, std = True), axis = 1)
+ 
+                #{{{ scatter of two compononets with histograms on axes
+                if False:
 
-                # faster
-                #stabNug = 1e-12
-                #samples_chol = mean + np.linalg.cholesky( var + np.eye(3)*stabNug ).dot( np.random.standard_normal(size = (3,numSamples)) ).T
-                #mag_grad_chol = np.linalg.norm(self.unscale(samples_chol, std = True), axis = 1)
+                    left, width = 0.1, 0.65
+                    bottom, height = 0.1, 0.65
+                    spacing = 0.005
 
-                # in between speeds
-                #s, v = np.linalg.eigh(var)
-                #samples_eigh = mean + ( v * np.sqrt(s) ).dot( np.random.standard_normal(size = (3,numSamples)) ).T
-                #mag_grad_eigh = np.linalg.norm(self.unscale(samples_eigh, std = True), axis = 1)
+                    rect_scatter = [left, bottom, width, height]
+                    rect_histx = [left, bottom + height + spacing, width, 0.2]
+                    rect_histy = [left + width + spacing, bottom, 0.2, height]
+
+                    # start with a square Figure
+                    fig = plt.figure(figsize=(8, 8))
+
+                    ax = fig.add_axes(rect_scatter)
+                    ax_histx = fig.add_axes(rect_histx, sharex=ax)
+                    ax_histy = fig.add_axes(rect_histy, sharey=ax)
+
+                    # use the previously defined function
+                    scatter_hist(samples[:,0] - mean[0], samples[:,1] - mean[1], ax, ax_histx, ax_histy)
+
+                    plt.show()
+
+                #}}}
+
+                #{{{ 3d scatter of sample components
+                if False:
+                    fig = plt.figure()
+                    ax = fig.add_subplot(111, projection='3d')
+                    ax.scatter(samples[:,0], samples[:,1], samples[:,2], c = mag_grad, cmap = "jet")
+                    ax.scatter(mean[0], mean[1], mean[2], color = "black", s = 1000)
+                    plt.show()
+                #}}}
+                
+                #{{{ 3d vector field plot
+                if False:
+                    c = mag_grad
+                    c = (c.ravel() - c.min()) / c.ptp()
+                    c = np.concatenate((c, np.repeat(c, 2))) # Repeat for each body line and two head lines
+                    c = plt.cm.jet(c) # Colormap
+
+                    fig = plt.figure()
+                    ax = fig.add_subplot(111, projection='3d')
+                    ax.quiver(0,0,0,samples[:,0], samples[:,1], samples[:,2], colors = c)
+                    ax.quiver(0,0,0,mean[0], mean[1], mean[2], color = "black")
+                    plt.show()
+                #}}}
 
                 # statistics
                 p = np.percentile(mag_grad, [9, 25, 50, 75, 91])
@@ -726,6 +783,7 @@ class AbstractModel(ABC):
                 mag_stats[ii, 1] = s
                 mag_stats[ii, 2:] = p
 
+                #{{{ histogram of magnitudes
                 if False:
 
                     plt.hist(mag_grad, bins = 30);
@@ -737,6 +795,7 @@ class AbstractModel(ABC):
                     plt.axvline(m + 2*s, color = "red", linestyle = "--")
                     plt.axvline(m - 2*s, color = "red", linestyle = "--")
                     plt.show()
+                #}}}
 
         return mag_stats
     #}}}

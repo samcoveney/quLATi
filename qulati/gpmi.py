@@ -810,30 +810,39 @@ class AbstractModel(ABC):
             print("\n[ERROR]: must call optimize before <screePlot> is called\n")
             return
 
-        val = self.spectralDensity(np.sqrt(self.Q), self.HP[0])
+        val, _ = self.spectralDensity(np.sqrt(self.Q), self.HP[0])
         cumsum = np.cumsum(val)/ np.sum(val)
 
         for val in [0.95, 0.997]:
 
-            plt.axhline(val)
+            #plt.axhline(val)
 
             try:
                 cumsum_where = np.argwhere(cumsum > val).min()
-                plt.axvline(cumsum_where)
+                #plt.axvline(cumsum_where)
                 print("{:1.3f} variance explained with {:d} eigenfunctions".format(val, cumsum_where + 1))
             except:
                 pass
 
-        plt.scatter(np.arange(cumsum.shape[0]), cumsum, color = "red")
-        plt.title("Scree Plot of explained variance")
+        sum_at_256 = cumsum[255]
+        plt.axvline(255)
+        plt.axhline(100*sum_at_256) 
+        print("{:1.3f} variance explained with {:d} eigenfunctions".format(sum_at_256*100, 256))
+
+        plt.plot(np.arange(cumsum.shape[0]), 100*cumsum, color = "red")
+        plt.xlabel("Eigenfunctions included")
+        plt.ylabel("Percentage of variance explained")
+        plt.title("{:1.1f}% of variance captured with {:d} eigenfunctions".format(sum_at_256*100, 256))
+        plt.ylim(0,100)
+        plt.xlim(0,self.Q.shape[0])
         plt.show()
     #}}}
 
 #{{{ subclasses for different models
 
-#{{{ Matern52 for GP, no mean function
-class Matern52(AbstractModel):
-    """Model y = GP(x) + e where GP(x) is a manifold GP with Matern52 kernel."""       
+#{{{ Matern32 for GP, no mean function
+class Matern32(AbstractModel):
+    """Model y = GP(x) + e where GP(x) is a manifold GP with Matern32 kernel."""       
 
     def spectralDensity(self, rho, w, grad = False):
         """Spectral Density for Matern kernel.
@@ -878,8 +887,8 @@ class Matern52(AbstractModel):
         self.grad_meanFunction = np.array([[0,0,0]])
 #}}}
 
-#{{{ manifold splines for mean, Matern52 GP for residuals
-class splinesAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplements setMeanFunction
+#{{{ manifold splines for mean, Matern32 GP for residuals
+class splinesAndMatern32(Matern32): # NOTE: inherets Matern32 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) are splines on the manifold."""       
 
     def setMeanFunction(self, smooth = 10.0):
@@ -920,8 +929,8 @@ class splinesAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplem
         self.y, self.yerr = self.scale(y), self.scale(self.yerr, std = True)
 #}}}
 
-#{{{ linear model of laplacian eigenfunction, Matern52 GP for residuals
-class basisAndMatern52(Matern52): # NOTE: inherets Matern52 class but reimplements setMeanFunction
+#{{{ linear model of laplacian eigenfunction, Matern32 GP for residuals
+class basisAndMatern32(Matern32): # NOTE: inherets Matern32 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) is regression with eigenfunctions basis.
 
        NOTES:

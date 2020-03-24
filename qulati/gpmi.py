@@ -588,10 +588,11 @@ class AbstractModel(ABC):
 
         # make covariance matrices
         if N is None:
-            print("Calculating *pointwise* posterior distribution...")
+            print("Calculating pointwise posterior distribution...")
             predCov  = self.makeCovar("prediction_pointwise")
         else:
-            print("Calculating *full* posterior distribution for first {:d} vertices...".format(N))
+            print("Calculating full posterior distribution for first {:d} vertices...".format(N))
+            # the point that be specifying N = X.shape[0], we can calculate this for the vertices only
             predCov  = self.makeCovar("prediction", N = N)
 
         covTrain = self.makeCovar("training")

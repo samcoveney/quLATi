@@ -447,7 +447,7 @@ def LaplacianEigenpairs(X, Tri, num = 2**8):
 
     meshFine = mesh # NOTE: doing this outside of function
 
-    print("  Calculating Laplacian on atrial mesh using direct pyMesh routine")
+    print("  Calculating Laplacian on atrial mesh using direct PyMesh routine")
 
     assembler = pymesh.Assembler(meshFine);
     LS = assembler.assemble("laplacian");

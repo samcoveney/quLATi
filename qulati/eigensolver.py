@@ -1,9 +1,13 @@
 import numpy as np
 from numpy.linalg import norm
-from scipy.sparse.linalg import eigsh
+from scipy.sparse.linalg import eigsh, eigs
 from scipy.spatial.distance import cdist
 
 import pymesh
+
+import trimesh
+from scipy.special import cotdg
+from scipy.sparse import csr_matrix, lil_matrix, diags
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
@@ -427,53 +431,94 @@ def subDivide(X, Tri, edges, centroids):
 #}}}
 
 
+def laplacian_matrix(X, Tri):
+
+        print("  Calculating Laplacian on atrial mesh")
+
+        RAD_TO_DEG = 180.0 / np.pi
+
+        # approximately normalize edge lengths, to help with units in area calculation
+        av_edge = X[Tri[:,0:2]]
+        av_edge_length = np.linalg.norm(av_edge[:,1,:] - av_edge[:,0,:], axis = 1).mean()
+        X = (X - X.mean(axis = 0)) / av_edge_length
+
+        mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+
+        areas = mesh.area_faces
+        angles = mesh.face_angles # angles within each face, ordered same way as vertices are listed in face
+
+        # make the mass matrix
+        vertex_faces = mesh.vertex_faces
+        MA = np.ma.masked_array(areas[vertex_faces], vertex_faces < 0) # vertex_faces is padded with -1s
+        M = MA.sum(axis = 1) / 3.0 # NOTE: this is the Barycentric area, which is a standard approx for the Voronoi cell 
+
+        # fill out Laplacian by loop over faces
+        L = lil_matrix((mesh.vertices.shape[0], mesh.vertices.shape[0]))
+
+        for ff, face in enumerate(mesh.faces):
+
+            cot_ang = cotdg(RAD_TO_DEG * angles[ff, 2])
+            L[face[0], face[1]] += cot_ang
+            L[face[1], face[0]] += cot_ang
+
+            cot_ang = cotdg(RAD_TO_DEG * angles[ff, 0])
+            L[face[1], face[2]] += cot_ang
+            L[face[2], face[1]] += cot_ang
+
+            cot_ang = cotdg(RAD_TO_DEG * angles[ff, 1])
+            L[face[2], face[0]] += cot_ang
+            L[face[0], face[2]] += cot_ang
+
+        # set the diagonals as -sum(rows)
+        L.setdiag(-L.sum(axis = 1), k = 0)
+
+        # convert to csr
+        L = L.tocsr()
+        L = L.multiply(-0.5) # multiply by the half factor, and by -1 to form the negative laplacian
+
+        # do not multiply by inverse mass matrix, instead use this mass matrix in the eigensolver routine
+        #L = L.multiply((1.0/M)).tocsr() # need tocsr because otherwise it because a coo_matrix
+
+        M = diags(M)
+
+        return L, M
+
+
 #{{{ solve eigenvalue problem for mesh
 def LaplacianEigenpairs(X, Tri, num = 2**8): 
 
     print("Get {:d} eigenfunctions with smallest eigenvalues".format(num))
 
-    mesh = pymesh.form_mesh(X, Tri)
+    if False:
+        mesh = pymesh.form_mesh(X, Tri)
 
-    mesh.enable_connectivity(); # enable connectivity data to be accessed
-    mesh.add_attribute("vertex_valance")
+        mesh.enable_connectivity(); # enable connectivity data to be accessed
+        mesh.add_attribute("vertex_valance")
 
-    N = mesh.vertices.shape[0]
+        N = mesh.vertices.shape[0]
 
-    # custom sub-divide routine
-    #subDivide(mesh)
+        print("  Calculating Laplacian on atrial mesh using PyMesh routine")
 
-    #meshFine = pymesh.subdivide(mesh, order = subdiv, method = "simple")
-    #print("ori_face_index:", meshFine.get_attribute("ori_face_index"))
+        assembler = pymesh.Assembler(mesh)
+        LS = assembler.assemble("laplacian") # NOTE: already the negative Laplacian
 
-    meshFine = mesh # NOTE: doing this outside of function
+        print( "  Solving eigenvalue problem for Laplacian...")
+        # using eigsh: because Ls should be symmetric. Shift invert + LM; should find smallest eigenvalues more easily
+        [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM") #, maxiter = 5000)
 
-    print("  Calculating Laplacian on atrial mesh using direct PyMesh routine")
+    else:
 
-    assembler = pymesh.Assembler(meshFine);
-    LS = assembler.assemble("laplacian");
+        LS, M = laplacian_matrix(X, Tri)
 
-    print( "  Solving eigenvalue problem for Laplacian on atrial mesh...")
+        print( "  Solving eigenvalue problem for Laplacian...")
+        # solve Lx = QMx; using eigsh because LS is symmetric
+        [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM", M = M) #, maxiter = 5000)
 
-    # using eigsh: because Ls should be symmetric. Shift invert + LM; should find smallest eigenvalues more easily
-    [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM") #, maxiter = 5000)
 
-    Q, V = np.real(Q), np.real(V) # complex part appears to be zero
-    Q[Q < 0] = 0.0 # NOTE: these negative values are basically zero...
 
-    # attempt gradient calculation
-#    G = assembler.assemble("gradient");
-#    print("G.shape:", G.shape)
-#    print("G:", G)
-#    input()
-#
-#    test = G * V[:, 1]  # testing for 1st eigenfunction
-#    test = test.reshape([int(test.shape[0]/3),3])
-#    print("test shape:", test.shape)
-#    print(test)
-#    input()
+    Q, V = np.real(Q), np.real(V) # complex part is zero
+    Q[Q < 0] = 0.0 # make sure the extremely tiny first Q is not negative
 
-    # check if orthogonal..
-    #print("checking orthonormal"); check = V.T.dot((V));  imShow(check)
 
     return Q, V
 
@@ -689,6 +734,7 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
 
     # call to subdivide function
     newX, newTri, vertsInFace = subDivide(X, Tri, edges, centroids)
+    #newX, newTri = X, Tri # for testing without subdivide
 
     # 3. solve eigenproblem on the extended and subdivided mesh
     # ---------------------------------------------------------

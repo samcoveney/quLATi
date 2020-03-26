@@ -16,6 +16,7 @@ import numba
 
 import time
 
+
 #{{{ fit a 2D plane to a set of 3D points using lstsq
 def fitPlaneLSTSQ(XYZ):
     """Fit 2D plane to 3D points using LSTSQ.
@@ -36,9 +37,9 @@ def fitPlaneLSTSQ(XYZ):
 #}}}
 
 
-#{{{ NEW!!! calculate eigenvalue gradients
+#{{{ calculate eigenfunction gradients
 @numba.jit(nopython=True)
-def NEWgradientEigenvectors(X, Tri, vertsInFace, V):
+def gradientEigenvectors(X, Tri, vertsInFace, V):
     """
         N : meshFine[0:N] are vertices of origianl mesh
         
@@ -151,6 +152,7 @@ def NEWgradientEigenvectors(X, Tri, vertsInFace, V):
         dfdx = a + 2*c*x[0] + e*y[0] + 3*f*xx[0] + 2*h*xy[0] + i*yy[0]
         dfdy = b + 2*d*y[0] + e*x[0] + 3*g*yy[0] + h*xx[0] + 2*i*xy[0]
 
+
         # rotate 2D gradients back into 3D
         # --------------------------------
 
@@ -170,119 +172,13 @@ def NEWgradientEigenvectors(X, Tri, vertsInFace, V):
             gradPhi[ii, :] = invRT.dot(gradPhi[ii])
 
 
-        # need to stack gradV as [3, M, centroids]
+        # need to stack gradV as [centroids, components, M]
         gradV[face, 0, :] = gradPhi[:,0]
         gradV[face, 1, :] = gradPhi[:,1]
         gradV[face, 2, :] = gradPhi[:,2]
 
 
     return gradV
-
-#}}}
-
-
-#{{{ calculate eigenvalue gradients
-
-def gradientEigenvectors(X, Tri, vertsInFace, N, V):
-    """
-        N : meshFine[0:N] are vertices of origianl mesh
-        
-        * first column of vertsInFace is the centroid, because of how I constructed vertsInFace
-    """
-
-    print("Calculating gradient of eigenfunctions...")
-    meshFine = pymesh.form_mesh(X, Tri)
-    meshFine.enable_connectivity()
-
-    #{{{ create mesh attributes
-
-    # PyMesh object
-
-    # area
-    meshFine.add_attribute("face_area")
-    areas = meshFine.get_attribute("face_area")
-
-    # normals
-    meshFine.add_attribute("face_normal")
-    normals = meshFine.get_face_attribute("face_normal")  # N.B. have not used get_attribute()
-    
-    meshFine.add_attribute("vertex_normal")
-    vertexNormals = meshFine.get_attribute("vertex_normal").reshape(-1,3)
-
-    # face IDs
-    meshFine.add_attribute("face_index")
-    IDs = meshFine.get_attribute("face_index").astype(int)
-
-    # face centroid
-    meshFine.add_attribute("face_centroid")
-    centroids = meshFine.get_attribute("face_centroid").reshape(-1,3)
-
-    #}}}
-
-
-    # pre-allocate array for answers
-    gradEigen = np.empty([V.shape[1], 3, N])
-
-
-    # loop over vertices in original mesh
-    for vert, x in enumerate(meshFine.vertices[0:N]):
-        #print("vert:", vert)
-
-        neighbouring_faces = meshFine.get_vertex_adjacent_faces(vert)
-        #print(neighbouring_faces)
-
-        # loop over neighbouring faces
-        for count, face in enumerate(neighbouring_faces):
-
-            # 1. get face vertices
-            # --------------------
-            tri = meshFine.faces[face]
-
-            # 2. get vertex coordinates
-            # -------------------------
-            vertices = meshFine.vertices[(tri[2], tri[0], tri[1]), :]  # store vertex coords as [vc, va, vb]
-
-            # 3. normalize vectors, then divide by 2*area
-            # -------------------------------------------
-            B = np.diff(np.vstack([vertices[-1],vertices]), axis = 0)  # gives us [ [c-b, a-c, b-a] ]
-            D = B / (2*areas[face])  # do NOT turn edge vectors B into unit vectors
-
-            # 4. cross product with face normals
-            # -----------------------------------
-            E = np.cross(normals[face], D)  # if minus sign included, arrows point wrong way, so ignore minus
-
-            # 5. calculate gradients of V
-            # ---------------------------
-            g = V[tri,:]
-            v = np.einsum('ki,kj->ij', g, E)
-            #print(v[1,:])
-            #print(v.shape)
-
-            # original
-            #vSum = v if count == 0 else vSum + v
-
-            # new: weight by areas of the triangles involved
-            vSum = v*areas[face] if count == 0 else vSum + v*areas[face]
-            areasSum = areas[face] if count == 0 else areasSum + areas[face] 
-
-
-        # 6. combine gradients at face centres back to central vertex
-        # -----------------------------------------------------------
-
-        # original 
-        #v_mean = vSum / (count+1) # FIXME: may want to weight this average by face area, or distance of face centre to vertex, or... etc.
-
-        # new: weight by areas of the triangles involved
-        v_mean = vSum / areasSum 
-
-        #print(v_mean)
-        #print("mean:", v_mean[1,:])
-        #input()
-
-        gradEigen[:, :, vert] = v_mean
-
-    
-    return gradEigen.T
 
 #}}}
 
@@ -431,6 +327,7 @@ def subDivide(X, Tri, edges, centroids):
 #}}}
 
 
+#{{{ calculate laplacian matrix
 def laplacian_matrix(X, Tri):
 
         print("  Calculating Laplacian on atrial mesh")
@@ -482,46 +379,24 @@ def laplacian_matrix(X, Tri):
         M = diags(M)
 
         return L, M
+#}}}
 
 
-#{{{ solve eigenvalue problem for mesh
+#{{{ solve laplacian eigenproblem
 def LaplacianEigenpairs(X, Tri, num = 2**8): 
 
     print("Get {:d} eigenfunctions with smallest eigenvalues".format(num))
 
-    if False:
-        mesh = pymesh.form_mesh(X, Tri)
+    LS, M = laplacian_matrix(X, Tri)
 
-        mesh.enable_connectivity(); # enable connectivity data to be accessed
-        mesh.add_attribute("vertex_valance")
-
-        N = mesh.vertices.shape[0]
-
-        print("  Calculating Laplacian on atrial mesh using PyMesh routine")
-
-        assembler = pymesh.Assembler(mesh)
-        LS = assembler.assemble("laplacian") # NOTE: already the negative Laplacian
-
-        print( "  Solving eigenvalue problem for Laplacian...")
-        # using eigsh: because Ls should be symmetric. Shift invert + LM; should find smallest eigenvalues more easily
-        [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM") #, maxiter = 5000)
-
-    else:
-
-        LS, M = laplacian_matrix(X, Tri)
-
-        print( "  Solving eigenvalue problem for Laplacian...")
-        # solve Lx = QMx; using eigsh because LS is symmetric
-        [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM", M = M) #, maxiter = 5000)
-
-
+    print( "  Solving eigenvalue problem for Laplacian...")
+    # solve Lx = QMx; using eigsh because LS is symmetric
+    [Q,V] = eigsh(LS, k = num, sigma = 0, which = "LM", M = M) #, maxiter = 5000)
 
     Q, V = np.real(Q), np.real(V) # complex part is zero
     Q[Q < 0] = 0.0 # make sure the extremely tiny first Q is not negative
 
-
     return Q, V
-
 #}}}
 
 
@@ -535,61 +410,38 @@ def extendMesh(X, Tri, layers, holes):
     for num in range(layers):
         print("Layer {:02d}/{:02d}".format(num+1, layers))
 
-        mesh = pymesh.form_mesh(X, Tri)
-        #print("mesh:", mesh)
-            
+        # trimesh
+        mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
 
-        # use Gaussian Curvature to capture the mesh edges
-        mesh.add_attribute("vertex_gaussian_curvature")
-        curvature = mesh.get_attribute("vertex_gaussian_curvature")
-        condition = curvature > 10.0*np.nanmean(curvature)
-        #print(condition)
-        args = np.argwhere(condition == True)
-        #print(args)
+        # find edges that belong to one face only
+        edges = mesh.edges_unique
+        unique, counts = np.unique(mesh.faces_unique_edges, return_counts = True)
+        args = np.unique(edges[unique[counts == 1]]) # this gives me the vertices in the edge
 
-
-        if False:
+        #{{{ plot highlighting the edge vertices
+        if False: # and num == layers - 1:
             fig = plt.figure()
             ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(X[:,0], X[:,1], X[:,2], alpha = 0.15) #, c = V[:,i])
-            ax.scatter(X[condition,0], X[condition,1], X[condition,2], alpha = 0.5, color = "red")
+            ax.scatter(X[:,0], X[:,1], X[:,2], alpha = 0.15)
+            ax.scatter(X[args,0], X[args,1], X[args,2], alpha = 0.5, color = "red")
             plt.show()
+        #}}}
 
-
-        # try to use valence, i.e. how many neighbours, to remove bad cases
-        if False:
-            mesh.add_attribute("vertex_valance")
-            valence = mesh.get_attribute("vertex_valance")
-            print("valence:", valence)
-            condition = valence < 6
-
-
-        __, edges = pymesh.mesh_to_graph(mesh)
-        #print(edges)
-
-
+        # useful edge information 
         which_edges = np.sum( np.isin(edges, args), axis = 1 ) == 2
-        #print(edges[which_edges])
         good_edges = edges[which_edges]
-
         edgeList_total = []
 
-        # FIXME: hardwired currently for 5 holes in the mesh, needs generalizing
+        # loop over holes in the mesh
         for hole in range(0,holes):
-
-            #print(edgeList_total)
-            #input("wait")
 
             # let's try to group the vertices
             while True:
-                vert = args[np.random.choice(np.arange(args.shape[0]))][0]
+                vert = args[np.random.choice(np.arange(args.shape[0]))]#[0]
                 if hole == 0: break
 
                 if vert not in edgeList_total: break
 
-
-            #print("vert:", vert)
-            #input("waiting:")
             firstVert = vert  # save firstVert so we now when we get back there
 
             edgeList = [firstVert]
@@ -597,54 +449,30 @@ def extendMesh(X, Tri, layers, holes):
             while True:
 
                 result = good_edges[ np.any(np.isin(good_edges, vert), axis = 1) , : ]
-                #print("Tri_with_condition:\n", result)
 
                 # if anti-clockwise triangles, use next vertex along in a looping fashion (0 -> 1, 1 -> 2, 2 -> 0)...
                 if len(edgeList) > 1:
-                    #print(edgeList[-2])
-                    #print( np.all( np.isin(result, edgeList[-2], invert = True), axis = 1) )
                     face_next = result[  np.any( np.isin(result, vert), axis = 1 ) & np.all( np.isin(result, edgeList[-2], invert = True), axis = 1)].flatten() 
                 else:
                     face_next = result[  np.any( np.isin(result, vert), axis = 1 ) ][0,:]
-                #print("face_next:", face_next)
 
                 vert_next = face_next[face_next != vert]
-
 
                 # break if we get back to where we started
                 if vert_next == firstVert: break
 
                 edgeList = edgeList + [vert_next[0]]
                 vert = vert_next
-                #print("new vert:", vert)
-
-            #print("edge list:", edgeList)
 
             edge_X = X[edgeList]
 
 
             # calculate vector 'normal' which points away from holes
-            # ------------------------------------------------------
-
-            if False:
-                # compute centered coordinates
-                G = edge_X.sum(axis=0) / edge_X.shape[0]
-                # run SVD
-                u, s, vh = np.linalg.svd(edge_X - G)
-                # unitary normal vector
-                normal = vh[2, :]
-            else:
-                c, normal = fitPlaneLSTSQ(edge_X)
-
-            #print(np.linalg.norm(normal))
-
-
-            av_X = np.mean(edge_X, axis = 0)
-
+            c, normal = fitPlaneLSTSQ(edge_X)
 
             # flip normal vector if it points inwards
+            av_X = np.mean(edge_X, axis = 0)
             inward_vector = av_X - np.mean(X, axis = 0)
-
             if normal.dot(inward_vector) < 0: normal = normal * -1
 
 
@@ -676,6 +504,7 @@ def extendMesh(X, Tri, layers, holes):
                     ee = edgeList[e + 1]
 
                 new_Tri = np.vstack([new_Tri, np.array([i, next_i, ee])])
+
 
             # keep track of which vertices we have dealt with already
             edgeList_total = edgeList_total + edgeList
@@ -741,7 +570,7 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
     Q, V = LaplacianEigenpairs(newX, newTri, num = num)
     
     # get the gradients at the centroids of the original mesh
-    gradV = NEWgradientEigenvectors(newX, newTri, vertsInFace, V)
+    gradV = gradientEigenvectors(newX, newTri, vertsInFace, V)
 
     # keep values only for original (non-extended) mesh vertices
     # FIXME: which values am I keeping?

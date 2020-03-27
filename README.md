@@ -7,9 +7,9 @@ It implements *Gaussian Process Manifold Interpolation (GPMI)* for doing Gaussia
 Since the code is focussed on GP regression on atrial meshes, the eigenfunction calculation routine makes use of specialized algorithms for mesh extension, subdivision, and gradient calculations. These could easily be modified for other use cases.
 
 
-## Installation
+## How to install
 
-It is best to set up a specialized anaconda environment for using quLATi, mainly for the dependency on the package PyMesh.
+It is probably best to set up a specialized anaconda environment for using quLATi:
 
 We set up such an environment in this order:
 
@@ -19,15 +19,21 @@ conda create --name pylat
 
 source activate pylat
 
-# easiest way we know to install PyMesh
-conda install -c hotfigs pymesh
+conda install -c conda-forge numpy scipy matplotlib numba trimesh
 
-conda install numpy scipy matplotlib numba
 ```
+
+The dependencies can be installed without anaconda using pip.
 
 Then run the following command from the top directory of quLATi:
 
 ```bash
+
 python setup.py install
+
 ```
+
+## How to use
+
+Coming soon!
 

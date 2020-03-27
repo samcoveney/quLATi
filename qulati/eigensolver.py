@@ -205,12 +205,12 @@ def subDivide(X, Tri, edges, centroids):
  
     # face centroids i.e. #
     # ---------------------
-    print("centroids shape:", centroids.shape)
+    #print("centroids shape:", centroids.shape)
 
     # edges pairs i.e. +
     # ------------------
     edgePairs = np.zeros((edges.shape[0],2,3), dtype = np.float64)
-    print("edgePairs.shape:", edgePairs.shape)
+    #print("edgePairs.shape:", edgePairs.shape)
     
     mul = np.array([[1./3.], [2./3.]])
 

@@ -13,5 +13,7 @@ setup(name = 'qulati',
           'scipy',
           'matplotlib',
           'future',
+          'numba',
+          'trimesh'
       ],
       zip_safe = False)

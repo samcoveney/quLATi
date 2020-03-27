@@ -12,134 +12,58 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 
-import pymesh
+import trimesh
 
 
 # CV stats function
 def gradient(X, Tri, scalar, magnitude_stats = False):
-    '''Calculate gradient of scalar field on every mesh *face* for all scaler fields provided.
+    '''Calculate gradient of scalar field on every mesh face for all scaler fields (at vertices) provided.
 
-       NOTE:
-       * for N-vertex F-face mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields to get (F x n) array result.
+       For N-vertex F-face mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields to get (F x n) array result.
     '''
 
-    #{{{ create mesh attributes
-
-    # PyMesh object
-    mesh = pymesh.form_mesh(X, Tri)
-
-    # area
-    mesh.add_attribute("face_area")
-    areas = mesh.get_attribute("face_area")
-
-    # normals
-    mesh.add_attribute("face_normal")
-    normals = mesh.get_face_attribute("face_normal")  # N.B. have not used get_attribute()
-    
-    mesh.add_attribute("vertex_normal")
-    vertexNormals = mesh.get_attribute("vertex_normal").reshape(-1,3)
-
-    # face IDs
-    mesh.add_attribute("face_index")
-    IDs = mesh.get_attribute("face_index").astype(int)
-
-    # face centroid
-    mesh.add_attribute("face_centroid")
-    centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
-
-    #}}}
+    # trimesh object
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+    areas = mesh.area_faces
+    normals = mesh.face_normals 
 
 
-    #{{{ calculate "CVfaceSamples" - CV vector at element/face center for each scalar sample
+    # calculate "CVfaceSamples" - CV vector at element/face center for each scalar sample
 
     if scalar.ndim == 1: scalar = scalar.reshape([-1,1])  # if 1D array, reshape into 2D array
 
-    print(scalar.shape[1], "scalar samples;", "looping over", IDs.shape[0], "mesh faces... ")
+    print(scalar.shape[1], "scalar samples;", "looping over", mesh.faces.shape[0], "mesh faces... ")
 
-    CVfaceSamples = np.zeros([IDs.shape[0], scalar.shape[1], 3]) # NOTE: store CV vector for all samples at every face
+    CVfaceSamples = np.zeros([mesh.faces.shape[0], scalar.shape[1], 3])
 
-    for faceID in IDs:
+
+    # loop over mesh faces
+    for ff in range(mesh.faces.shape[0]):
 
         # 1. get face vertices
         # --------------------
-        vertexID = mesh.faces[faceID]
+        face = mesh.faces[ff]
 
         # 2. get vertex coordinates
         # -------------------------
-        vertices = mesh.vertices[(vertexID[2], vertexID[0], vertexID[1]), :]  # store vertex coords as [vc, va, vb]
+        vertices = mesh.vertices[(face[2], face[0], face[1]), :]  # store vertex coords as [vc, va, vb]
 
         # 3. normalize vectors, then divide by 2*area
         # -------------------------------------------
         B = np.diff(np.vstack([vertices[-1],vertices]), axis = 0)  # gives us [ [c-b, a-c, b-a] ]
-        D = B / (2*areas[faceID])  # do NOT turn edge vectors B into unit vectors
+        D = B / (2*areas[ff])  # do NOT turn edge vectors B into unit vectors
 
         # 4. cross product with face normals
         # -----------------------------------
-        E = np.cross(normals[faceID], D)  # if minus sign included, arrows point wrong way, so ignore minus
+        E = np.cross(normals[ff], D)  # if minus sign included, arrows point wrong way, so ignore minus
 
         # 5. calculate gradients of scalar
         # -----------------------------
-        g = scalar[vertexID,:]
+        g = scalar[face,:]
         v = np.einsum('ki,kj->ij', g, E)
-        CVfaceSamples[faceID] = v
-
-    #}}}
-
-   
-    #{{{ calculate "CVvertexSamples" - CV vector at vertex for each scalar sample
-   
-    # NOTE: I'm not convinced that averaging to vertices is necessarily great for vectors... probably fine for magnitudes though
-
-    if False:
-
-        CVvertexSamples = np.zeros([mesh.vertices.shape[0], scalar.shape[1], 3]) # NOTE: store CV vector for all samples at every vertex
-
-        for s in range(scalar.shape[1]):
-
-            CV = CVfaceSamples[:,s,:]
-
-            vertexCVx = pymesh.convert_to_vertex_attribute(mesh, CV[:,0]).reshape([-1,1])
-            vertexCVy = pymesh.convert_to_vertex_attribute(mesh, CV[:,1]).reshape([-1,1])
-            vertexCVz = pymesh.convert_to_vertex_attribute(mesh, CV[:,2]).reshape([-1,1])
-
-            CVvertexSamples[:,s,:] = np.hstack([vertexCVx, vertexCVy, vertexCVz])
-
-    #}}}
+        CVfaceSamples[ff] = v
 
 
-    #{{{ decide upon and return results
-
-    #grad_results = CVvertexSamples if at_vertices else CVfaceSamples
-    grad_results = CVfaceSamples
-
-    if magnitude_stats == False:
-
-        return np.squeeze(grad_results)
-
-    else: 
-
-        mag = np.linalg.norm(grad_results, axis = 2)
-
-        mean = np.mean(mag, axis = 1)
-        stdev = np.std(mag, axis = 1)
-
-        if scalar.shape[1] > 1:
-
-            qs = np.percentile(mag, [9, 25, 50, 75, 91], axis = 1).T
-
-            llq, lq, median, hq, hhq = qs[0], qs[1], qs[2], qs[3], qs[4]
-            
-            print(stdev[:,None].shape)
-            print(qs.shape)
-
-            stats_results = np.hstack([ mean[:,None], stdev[:,None], qs ])
-
-        else:
-            
-            stats_results = np.hstack([ mag, np.full([mag.shape[0], 6], np.nan) ])
-
-        return stats_results
-
-    #}}}
+    return np.squeeze(CVfaceSamples)
 
 

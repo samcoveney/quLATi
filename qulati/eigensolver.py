@@ -533,10 +533,6 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
        3. calculate eigenfunctions
        4. calculate gradients of eigenfunctions at centroids
 
-       These routine rely on PyMesh, but only for conveniance:
-       * centroids: easily calculated as mean of vertics
-       * edges: easily contructed from faces
-       
        Returns:
        Q: eigenvalues
        V: eigenfunctions at original vertices and face centres

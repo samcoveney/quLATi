@@ -2,19 +2,15 @@ import numpy as np
 from numpy.linalg import norm
 from scipy.sparse.linalg import eigsh, eigs
 from scipy.spatial.distance import cdist
-
-import pymesh
-
-import trimesh
 from scipy.special import cotdg
 from scipy.sparse import csr_matrix, lil_matrix, diags
+
+import trimesh
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 
 import numba
-
-import time
 
 
 #{{{ fit a 2D plane to a set of 3D points using lstsq
@@ -517,7 +513,13 @@ def extendMesh(X, Tri, layers, holes):
 
     print("Extended mesh has {:d} vertices and {:d} faces.".format(X.shape[0], Tri.shape[0]))
 
-    return X, Tri
+
+    # create another mesh, get edges and centroids
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+    edges = mesh.edges_unique
+    centroids = mesh.triangles_center
+
+    return X, Tri, edges, centroids
 #}}}
 
 
@@ -534,8 +536,6 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
        These routine rely on PyMesh, but only for conveniance:
        * centroids: easily calculated as mean of vertics
        * edges: easily contructed from faces
-       * "Laplacian": this could be coded up easily, but I haven't done it yet
-       * "vertexGaussianCurvature": used to identify edge points. Probably simple to replace 
        
        Returns:
        Q: eigenvalues
@@ -550,18 +550,11 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
 
     # 1. extend the mesh
     # ------------------
-    X, Tri = extendMesh(X, Tri, layers, holes)
-    extended_num_verts = X.shape[0]
+    X, Tri, edges, centroids = extendMesh(X, Tri, layers, holes)
+    extended_num_verts = X.shape[0] # save number of vertices of extended mesh
 
     # 2. subdivide the mesh
     # ---------------------
-    # use pymesh routines to get edge pairs and centroids
-    mesh = pymesh.form_mesh(X, Tri)
-    __, edges = pymesh.mesh_to_graph(mesh)
-    mesh.add_attribute("face_centroid")
-    centroids = mesh.get_attribute("face_centroid").reshape(-1,3)
-
-    # call to subdivide function
     newX, newTri, vertsInFace = subDivide(X, Tri, edges, centroids)
     #newX, newTri = X, Tri # for testing without subdivide
 
@@ -569,15 +562,12 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
     # ---------------------------------------------------------
     Q, V = LaplacianEigenpairs(newX, newTri, num = num)
     
-    # get the gradients at the centroids of the original mesh
+    # 4. get eigenfunction gradients at mesh centroids
+    # ------------------------------------------------
     gradV = gradientEigenvectors(newX, newTri, vertsInFace, V)
 
-    # keep values only for original (non-extended) mesh vertices
-    # FIXME: which values am I keeping?
-    #V, gradV = V[0:original_size], gradV[0:original_size,:,:]
 
-    # return V for original vertices + centroids, gradV was only calculated for centroids anyway
-
+    # keep V only at original mesh vertices and centroids
     V = np.vstack( [ V[0:orig_num_verts] , V[extended_num_verts:extended_num_verts+orig_num_faces] ] )
 
     return Q, V[0:orig_num_verts+orig_num_faces], gradV[0:orig_num_faces, :, :], newX[extended_num_verts:extended_num_verts+orig_num_faces]

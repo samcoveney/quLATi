@@ -2,15 +2,23 @@
    gpmi.py
 
    Module implementing Gaussian Process Manifold Interpolation (GPMI).
-
+   
    Contains:
-      class GPMI()
+      class AbstractModel
+      class Matern(AbstractModel)
+      class splinesAndMatern(AbstractModel)
+      class basisAndMatern(AbstractModel)
+
+   Although the covariance matrix is reduced-rank, the covariance matrix is formed and used with regular log-likelihood and prediction equations.
+   This is to allow generality, such that we can included gradient observations and auxillary inputs.
+
 
    Created: 03-Feb-2020
    Author:  Sam Coveney
 
 """
 
+#{{{ module imports
 from abc import ABC, abstractmethod
 from functools import wraps
 
@@ -25,6 +33,7 @@ import time
 
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
+#}}}
 
 
 #{{{ utilities
@@ -70,6 +79,9 @@ def scatter_hist(x, y, ax, ax_histx, ax_histy):
 
 #}}}
 
+
+# abstract class with common methods needed for GPMI
+# ==================================================
 
 class AbstractModel(ABC):
     """Gaussian Process Manifold Interpolation."""
@@ -130,6 +142,7 @@ class AbstractModel(ABC):
     #{{{ everything in common: init, del, reset, and abstract methods
     def __init__(self, X, Tri, Q, V, gradV):
         """Initialize class with manifold data."""
+
         self.X = X
         self.Tri = Tri
         self.Q = Q
@@ -170,27 +183,6 @@ class AbstractModel(ABC):
         """Mean function m(x) so that y = m(x) + GP."""
         pass
 
-
-    def getMeanFunction(self):
-        """Return value of the mean function and gradient of mean function."""
-        return self.meanFunction, self.grad_meanFunction
-
-    #}}}
-    
-    # {{{ s2 kernel function
-    # should be an abstract method that is implemented elsewhere
-    def s2kernel(self, s2i , s2j, l, grad = False):
-        """Covariance between s2 values: fixed as RBF kernel for now."""
-           
-        dists = cdist(s2i[:,None]/l, s2j[:,None]/l, "sqeuclidean") # last HP is lengthscale for S2
-        Ks2 = np.exp(-dists)
-
-        # gradient wrt s2_lengthscale
-        if grad:
-            gradKs2 = 2.0*(dists/l)*Ks2
-            return Ks2, gradKs2
-        else:
-            return Ks2, None
     #}}}
 
     # {{{ data handling including scalings
@@ -234,6 +226,22 @@ class AbstractModel(ABC):
             return (y * self.y_std) + self.y_mean
         else:
             return (y * self.y_std)
+    #}}}
+    
+    # {{{ s2 kernel function RBF
+    # should be an abstract method that is implemented elsewhere
+    def s2kernel(self, s2i , s2j, l, grad = False):
+        """Covariance between s2 values: fixed as RBF kernel for now."""
+           
+        dists = cdist(s2i[:,None]/l, s2j[:,None]/l, "sqeuclidean") # last HP is lengthscale for S2
+        Ks2 = np.exp(-dists)
+
+        # gradient wrt s2_lengthscale
+        if grad:
+            gradKs2 = 2.0*(dists/l)*Ks2 # NOTE: lengthscale HP already absorbed into dists
+            return Ks2, gradKs2
+        else:
+            return Ks2, None
     #}}}
 
     #{{{ covariance matrix
@@ -392,6 +400,7 @@ class AbstractModel(ABC):
         if grad and self.nugget_train: grad_cov[:,:,self.nugget_index] = np.diag( np.hstack( [ np.ones(self.y.shape[0]), np.zeros(self.grady.flatten().shape[0]) ] ) )  # old: np.eye(a.shape[0])
         if grad and self.gradnugget_train: grad_cov[:,:,self.gradnugget_index] = np.diag( np.hstack( [ np.zeros(self.y.shape[0]), np.ones(self.grady.flatten().shape[0]) ] ) )
 
+
         if grad:
             return cov, grad_cov
         else:
@@ -475,7 +484,7 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ optimize the hyperparameters
-    def optimize(self, nugget, restarts, gradnugget = 0.0001):
+    def optimize(self, nugget, restarts, llh_gradients = False, gradnugget = 0.0001):
         """Optimize the hyperparameters.
         
            Arguments:
@@ -496,7 +505,7 @@ class AbstractModel(ABC):
         sguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
         nguess = np.random.uniform(np.log(1e-3), np.log(1e-2), size = restarts).reshape([1,-1]).T
         gnguess = np.random.uniform(np.log(1e-3), np.log(1e-2), size = restarts).reshape([1,-1]).T
-        S2guess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
+        S2guess = np.random.uniform(np.log(10), np.log(1000), size = restarts).reshape([1,-1]).T # FIXME: should scale S2 better, or base guesses on scale
 
         hdr = "Restart | " + " len " + " | " + " var " + " | "
         guess = np.hstack([dguess, sguess])
@@ -532,14 +541,15 @@ class AbstractModel(ABC):
             hdr = hdr + " s2l " + " | " 
 
         # run optimization code
-        print("Optimizing Hyperparameters...\n" + hdr)
+        grad_print = "with LLH gradients" if llh_gradients else ""
+        print("Optimizing Hyperparameters" + grad_print + "...\n" + hdr)
 
         for ng, g in enumerate(guess):
             optFail = False
             try:
                 bestStr = "   "
-                #res = minimize(self.LLH, g, args = (True), method = 'Newton-CG', jac=True) # make use of gradLLH
-                res = minimize(self.LLH, g, args = (False), method = 'Nelder-Mead') 
+                if llh_gradients: res = minimize(self.LLH, g, args = (True), method = 'L-BFGS-B', jac=True) # make use of gradLLH
+                else:             res = minimize(self.LLH, g, args = (False), method = 'Nelder-Mead') 
 
                 if np.isfinite(res.fun):
                     try:
@@ -624,6 +634,39 @@ class AbstractModel(ABC):
             return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(np.diagonal(Vf)), std = True)
     #}}}
 
+    #{{{ posterior samples
+    @Decorators.check_posterior_exists
+    def posteriorSamples(self, num):
+        """Returns posterior samples from the whole model (samples from the posterior + mean function)
+        
+        Arguments:
+        num -- how many posterior samples to calculate
+        
+        """
+
+        print("Calculating {:d} samples from posterior distribution...".format(num))
+
+        nugget = 1e-10
+        while True:
+            try:
+                print("  (adding nugget {:1.0e} to posterior var diagonal for stability)".format(nugget))
+                np.fill_diagonal(self.post_var, np.diag(self.post_var) + nugget)
+                #print("  Cholesky decomp")
+                L = np.linalg.cholesky(self.post_var)
+                break
+            except:
+                nugget = nugget * 10
+        
+        N = self.post_mean.shape[0]
+
+        #print("Calculate samples")
+        u = np.random.randn(N, num)
+        samples = self.post_mean[:,None] + L.dot(u)
+
+        return self.meanFunction[:,None] + self.unscale(samples)
+        
+    #}}}
+
     #{{{ posterior distribution of gradient
     @Decorators.check_posterior_args
     def posteriorGradient(self, s2pred = None):
@@ -672,40 +715,7 @@ class AbstractModel(ABC):
 
     #}}}
 
-    #{{{ posterior samples
-    @Decorators.check_posterior_exists
-    def posteriorSamples(self, num):
-        """Returns posterior samples from the whole model (samples from the posterior + mean function)
-        
-        Arguments:
-        num -- how many posterior samples to calculate
-        
-        """
-
-        print("Calculating {:d} samples from posterior distribution...".format(num))
-
-        nugget = 1e-10
-        while True:
-            try:
-                print("  (adding nugget {:1.0e} to posterior var diagonal for stability)".format(nugget))
-                np.fill_diagonal(self.post_var, np.diag(self.post_var) + nugget)
-                #print("  Cholesky decomp")
-                L = np.linalg.cholesky(self.post_var)
-                break
-            except:
-                nugget = nugget * 10
-        
-        N = self.post_mean.shape[0]
-
-        #print("Calculate samples")
-        u = np.random.randn(N, num)
-        samples = self.post_mean[:,None] + L.dot(u)
-
-        return self.meanFunction[:,None] + self.unscale(samples)
-        
-    #}}}
-
-    #{{{ posteriorStatistics
+    #{{{ gradient magnitude statistics
     def gradientStatistics(self, numSamples = 2000, centIdx = None, s2pred = None):
         """Calculate statistics for magnitude of posterior gradients, returns mesh idx and these statistics."""
     
@@ -839,11 +849,20 @@ class AbstractModel(ABC):
         plt.show()
     #}}}
 
+
+# subclasses implementing different models
+# ========================================
+
 #{{{ subclasses for different models
 
-#{{{ Matern32 for GP, no mean function
-class Matern32(AbstractModel):
+#{{{ Matern for GP, no mean function
+class Matern(AbstractModel):
     """Model y = GP(x) + e where GP(x) is a manifold GP with Matern32 kernel."""       
+
+    def kernelSetup(self, smoothness):
+
+        self.smoothness = smoothness
+
 
     def spectralDensity(self, rho, w, grad = False):
         """Spectral Density for Matern kernel.
@@ -854,7 +873,8 @@ class Matern32(AbstractModel):
         """
         
         D = 2  # dimension
-        v = 3.0/2.0  # smoothness
+        #v = 3.0/2.0  # smoothness
+        v = self.smoothness  # smoothness
 
         alpha = (2**D * np.pi**(D/2) * gamma(v + (D/2)) * (2*v)**v) / gamma(v)
         delta = 1.0 / rho**(2*v)
@@ -889,7 +909,7 @@ class Matern32(AbstractModel):
 #}}}
 
 #{{{ manifold splines for mean, Matern32 GP for residuals
-class splinesAndMatern32(Matern32): # NOTE: inherets Matern32 class but reimplements setMeanFunction
+class splinesAndMatern(Matern): # NOTE: inherets Matern32 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) are splines on the manifold."""       
 
     def setMeanFunction(self, smooth = 10.0):
@@ -931,7 +951,7 @@ class splinesAndMatern32(Matern32): # NOTE: inherets Matern32 class but reimplem
 #}}}
 
 #{{{ linear model of laplacian eigenfunction, Matern32 GP for residuals
-class basisAndMatern32(Matern32): # NOTE: inherets Matern32 class but reimplements setMeanFunction
+class basisAndMatern(Matern): # NOTE: inherets Matern32 class but reimplements setMeanFunction
     """Model y = m(x) + GP(x) + e where m(x) is regression with eigenfunctions basis.
 
        NOTES:

@@ -2,6 +2,8 @@
 
 This package is for *Quantifying Uncertainty for Local Activation Time Interpolation*.
 
+[![DOI](https://zenodo.org/badge/239559025.svg)](https://zenodo.org/badge/latestdoi/239559025)
+
 It implements *Gaussian Process Manifold Interpolation (GPMI)* for doing Gaussian process regression on a manifold represented by a triangle mesh.
 
 Since the code is focussed on GP regression on atrial meshes, the eigenfunction calculation routine makes use of specialized algorithms for mesh extension, subdivision, and gradient calculations. These could easily be modified for other use cases.

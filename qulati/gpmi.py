@@ -10,7 +10,7 @@
       class basisAndMatern(AbstractModel)
 
    Although the covariance matrix is reduced-rank, the covariance matrix is formed and used with regular log-likelihood and prediction equations.
-   This is to allow generality, such that we can included gradient observations and auxillary inputs.
+   This is to allow generality, such that we can include gradient observations and auxillary inputs (such as pacing value).
 
 
    Created: 03-Feb-2020

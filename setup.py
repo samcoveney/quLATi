@@ -1,7 +1,7 @@
 from setuptools import setup
 
 setup(name = 'qulati',
-      version = '0.1',
+      version = '1.0',
       description = 'Quantifying Uncertainty in Local Activation Time Interpolation',
       url = 'http://github.com/samcoveney/quLATi',
       author = 'Sam Coveney',

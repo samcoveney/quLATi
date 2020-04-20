@@ -11,6 +11,7 @@
    Specifically, this module makes use of the reduced-rank form of the covariance matrix.
    The models are fast and can handle very large amounts of data.
    These models are less flexible; gradient observations and auxillary inputs cannot be supplied.
+   At present, heteroscedastic noise cannot be supplied either.
 
 
    Created: 07-Apr-2020
@@ -185,131 +186,6 @@ class AbstractModel(ABC):
         else:
             return (y * self.y_std)
     #}}}
-    
-    #{{{ covariance matrix
-    def makeCovar(self, type, grad = False):
-        """Returns the kernel matrix of the specified type.
-        
-           Arguments:
-           type -- training covar, prediction covar, or cross covar
-
-           Keyword arguments:
-           grad -- whether to return the matrix kernel derivatives wrt hyperparameters
-
-           NOTES:
-           * nugget values passed to the kernel function will be set here depending on type
-           * when using self.s2, currently prediction is only for a single specified s2 called self.s2pred
-           * gradient observations do not work when self.s2 is not None at the moment
-             -> for s2 values for gradient observations, will need to repeat self.grads2 3 times, so that grads2 is supplied for every component of the gradient
-        
-        """
-
-        if type == "training":
-
-            a = self.V[self.vertex]
-            b = a
-
-            # NOTE: error is properly prepared here
-            err = self.nugget
-
-
-        if type == "prediction":
-
-            a = self.V if N is None else self.V[0:N]
-            b = a
-
-
-        if type == "prediction_pointwise":
-            # NOTE: exception, just calculate pointwise variance for K(X*, X*), don't need the cross terms
-
-            SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-
-            a = self.V
-            b = a
-
-            temp = (SD*a*b).sum(axis = 1)
-
-            return self.HP[1]*temp
-
-
-        if type == "cross":
-
-            a = self.V if N is None else self.V[0:N]
-            b = self.V[self.vertex]
-
-
-        if type == "grad_cross":
-        
-            a = self.gradV.reshape(-1,self.V.shape[1])
-            b = self.V[self.vertex]
-
-
-        if type  == "grad_grad_prediction":
-            # NOTE: exception, do not calclate the full posterior variance for derivative predictions, it is too big! Just pointwise.
-
-            SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-            #temp = np.einsum('i, ijk -> ijk', SD, self.gradV.T)
-            #temp = np.einsum('ijk, ilk -> kjl', temp, self.gradV.T)
-            #temp = np.einsum('j, ijk -> ijk', SD, self.gradV)
-            #temp = np.einsum('ijk, ljk -> kil', temp, self.gradV)
-
-            #temp = np.einsum('k, ijk -> ijk', SD, self.gradV)
-            temp = SD * self.gradV
-            temp = np.einsum('ijk, ilk -> ijl', temp, self.gradV)
-            #temp = np.inner(temp, self.gradV) # probably correct, but memory error
-
-            return self.HP[1]*temp
-        
-
-        # nuggets and observations errors for training covariance only
-        if type != "training": err = 0
-
-        # call to create the kernel matrix
-        cov, grad_cov = self.kernelMatrix(a, b, err, grad = grad)
-
-        if grad:
-            return cov, grad_cov
-        else:
-            return cov
-    #}}}
-
-    #{{{ kernel matrix
-    def kernelMatrix(self, a, b, err, grad = False):
-        """Creates matrix of kernel entries, and gradient of entries wrt hyperparameters if requiered.
-        
-           NOTES:
-           * kernelMatrix always uses the value passed in nugget as the nugget, so that a zero nugget can be passed for non-training-data covariances.
-        
-        """
-
-        # for storing grad_kernel results
-        if grad: grad_cov = np.empty([a.shape[0], b.shape[0], self.HP.shape[0]])
-
-        # evaluate the spectral density
-        SD, gradSD = self.spectralDensity( self.HP[0], np.sqrt(self.Q), grad = grad )
-        
-        # gradient wrt lengthscale
-        if grad: grad_cov[:,:,0] = self.HP[1] * a.dot(np.diag(gradSD)).dot(b.T)
-
-        #cov = a.dot(np.diag(SD)).dot(b.T)
-        cov = a.dot( (b*SD).T ) # faster like this
-
-        # gradient wrt variance
-        if grad: grad_cov[:,:,1] = np.copy(cov)
-
-        cov = self.HP[1]*cov
-            
-        # add nugget to diagonal
-        np.fill_diagonal(cov, np.diag(cov) + err)
-
-        # gradient wrt nugget # NOTE: added test to make sure we only add this on K_x_x and K_gx_gx
-        if grad and self.nugget_train: grad_cov[:,:,self.nugget_index] = np.eye(a.shape[0]) 
-        
-        if grad:
-            return cov, grad_cov
-        else:
-            return cov, None
-    #}}}
 
     #{{{ negative loglikelihood
     def LLH(self, guess, grad = False):
@@ -338,7 +214,7 @@ class AbstractModel(ABC):
 
         SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) ) # NOTE: multiply SD by signal variance
         SD = self.HP[1] * SD
-        Z = np.diag(self.nugget/SD) + (V.T).dot(V)
+        Z = np.diag(self.nugget/SD) + (V.T).dot(V) # FIXME: we can calculate V.T.dot(V) just once, in advance
 
         try: # more stable
 

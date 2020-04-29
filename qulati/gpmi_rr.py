@@ -10,8 +10,10 @@
 
    Specifically, this module makes use of the reduced-rank form of the covariance matrix.
    The models are fast and can handle very large amounts of data.
-   These models are less flexible; gradient observations and auxillary inputs cannot be supplied.
-   At present, heteroscedastic noise cannot be supplied either.
+
+   These models are less flexible; auxillary inputs cannot be supplied.
+
+   At present heteroscedastic noise and gradient observations cannot be supplied.
 
 
    Created: 07-Apr-2020

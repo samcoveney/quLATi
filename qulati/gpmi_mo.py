@@ -220,7 +220,7 @@ class AbstractModel(ABC):
         # calculate kernel matrices
         self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
         K = self.kernelMatrix(V, V, nugget = True) # this is the full kernel A \kron K(x,x')
-        L_TMP, SD = self.make_invSigma() # NOTE: L_TMP is the Cholesky of the small inverse needed for efficient invSigma calculation
+        L_TMP = self.make_invSigma() # NOTE: L_TMP is the Cholesky of the small inverse needed for efficient invSigma calculation
         invK = self.invSigma
         invK_y = invK.dot(y)
 
@@ -234,7 +234,7 @@ class AbstractModel(ABC):
         #print("logDetK:", logDetK)
 
         # calculate logDetK with the expression I derived
-        logDetK = 2*np.sum(np.log(np.diag(L_TMP[0]))) + self.y.shape[1]*np.sum(np.log(SD)) + self.y.shape[0]*np.sum(np.log(self.D))
+        logDetK = 2*np.sum(np.log(np.diag(L_TMP[0]))) + self.y.shape[1]*np.sum(np.log(self.SD)) + self.y.shape[0]*np.sum(np.log(self.D))
         #print("logDetK:", logDetK)
 
         # calculate loglikelihood
@@ -436,10 +436,7 @@ class Matern(AbstractModel):
         A = self.L.dot(self.L.T)
 
         # create K(X,X) = PHI * SD * PHI.T
-        #SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
         SD = self.SD
-        #V = self.V[self.vertex]
-        #K = V.dot((V*SD).T)
         K = a.dot((b*SD).T)
 
         # create Sigma matrix
@@ -448,7 +445,6 @@ class Matern(AbstractModel):
         if nugget == True: 
             N = K.shape[0]
             Delta = np.diag(np.repeat(self.D, N))
-            # may be even more efficient to store Delta flat, and update the diagonal of A \kron k(x,x')
 
             return (Sigma + Delta)
 
@@ -469,15 +465,10 @@ class Matern(AbstractModel):
         B = kron(self.L, V)
 
         # parts of inverse expression
-        #SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
         SD = self.SD
         tmp_1 = np.diag(np.tile(1.0/SD, self.y.shape[1]))
         tmp_2 = inv_delta.dot(B)
         tmp_3 = B.T.dot(tmp_2)
-
-        # now calculate the inverse - use inv
-        #TMP = np.linalg.inv(tmp_1 + tmp_3)
-        #self.invSigma = inv_delta - ( tmp_2 ).dot( TMP ).dot( tmp_2.T )
 
         # now calculate the inverse - use Cholesky because I'll need it later
         L_TMP = linalg.cho_factor(tmp_1 + tmp_3)
@@ -487,7 +478,7 @@ class Matern(AbstractModel):
         #explicit_invSigma = np.linalg.inv(self.Sigma)
         #print("Same?", np.allclose(invSigma, explicit_invSigma))
 
-        return L_TMP, SD
+        return L_TMP
 
 
     def spectralDensity(self, rho, w, grad = False):

@@ -83,14 +83,7 @@ kron = lambda a, b:  (a[:, None, :, None]*b[None, :, None, :]).reshape(a.shape[0
 # ================================================
 
 class AbstractModel(ABC):
-    """ Gaussian Process Manifold Interpolation, making use of reduced-rank expressions.
-    
-        Much less flexible. Will not be able to accept gradient observations or auxillary observations.
-
-        In theory, heteroscedastic noise can be used, but for simplicity is not included in this model framework.
-
-        May or may not be able to prediction the posterior gradients with the reduced rank framework...
-    """
+    """ Gaussian Process Manifold Interpolation for multiple outputs, making use of reduced-rank expressions."""
 
     #{{{ decorators for checking methods arguments
     class Decorators(object):
@@ -183,6 +176,28 @@ class AbstractModel(ABC):
             return (y * self.y_std)
     #}}}
 
+    #{{{ untransform optimization guess into model parameters
+    def HP_from_guess(self, guess):
+
+        # set hyperparameter values
+        self.HP = np.exp(guess[0])
+
+        # transform L carefully so that diagonals are positive
+        for i in range(0, self.L_idx[0].shape[0]):
+            if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
+                self.L[self.L_idx[0][i], self.L_idx[1][i]] = np.exp(guess[i + 1]) 
+            else: # no transform on off-diagonals
+                self.L[self.L_idx[0][i], self.L_idx[1][i]] = guess[i + 1] 
+        #self.L[self.L_idx] = guess[1:-self.y.shape[1]]
+
+        #print("L:", self.L)
+        #print("A:", self.L.dot(self.L.T))
+
+        self.D = np.exp(guess[-self.y.shape[1]:])
+
+        return
+    #}}}
+
     #{{{ negative loglikelihood
     def LLH(self, guess):
         """Return the negative loglikelihood.
@@ -196,54 +211,35 @@ class AbstractModel(ABC):
         """
 
         #print("guess:", guess)
-
-        # set hyperparameter values
-        self.HP = np.exp(guess[0])
-        self.L[self.L_idx] = guess[1:-self.y.shape[1]]
-        self.D = np.exp(guess[-self.y.shape[1]:])
-
-        # NOTE: SD is being called multiple times here, in kernel matrix call, and call for efficient inverse, etc.
-        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
+        self.HP_from_guess(guess)
 
         # set outputs and inputs
         y = self.y.T.flatten()
         V = self.V[self.vertex]
+
+        # calculate kernel matrices
+        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
         K = self.kernelMatrix(V, V, nugget = True) # this is the full kernel A \kron K(x,x')
-
-
-        # call to update self.invSigma
-        L_TMP, SD = self.make_invSigma()
-        # NOTE: L_TMP is the Cholesky of the small inverse needed for efficient invSigma calculation
-
+        L_TMP, SD = self.make_invSigma() # NOTE: L_TMP is the Cholesky of the small inverse needed for efficient invSigma calculation
         invK = self.invSigma
         invK_y = invK.dot(y)
 
+
         # calculating log | K |
         # ---------------------
-
-        # test filling diagonal with big nugget
-        #logDetK = np.log( linalg.det(K) )
-        #print("log(det(k)):", logDetK)
 
         # explicit calculation of logDetK 
         #L_test = linalg.cho_factor(K)        
         #logDetK = 2.0*np.sum(np.log(np.diag(L_test[0])))        
         #print("logDetK:", logDetK)
 
-        # let's try and calculate it with my new expression
+        # calculate logDetK with the expression I derived
         logDetK = 2*np.sum(np.log(np.diag(L_TMP[0]))) + self.y.shape[1]*np.sum(np.log(SD)) + self.y.shape[0]*np.sum(np.log(self.D))
         #print("logDetK:", logDetK)
 
-
-        # NOTE: from Arno paper; we need something along these lines
-       # log |Q| = (n - m) log(sig_n^2) + log(|Z|) + sum_j log(SD)
-        #logDetZ = 2.0*np.sum(np.log(np.diag(L[0])))
-        #log_Q = (y.shape[0] - self.Q.shape[0]) * np.log(self.nugget) \
-        #      + logDetZ \
-        #      + np.sum(np.log(SD))
-                
+        # calculate loglikelihood
+        # -----------------------
         llh = 0.5 * ( logDetK + ( y.T ).dot( invK_y ) + y.shape[0]*np.log(2*np.pi) )  # NOTE: I'm not entirely sure about the constant when we have derivatives
-
         #print("llh:", llh)
 
         return llh
@@ -266,30 +262,36 @@ class AbstractModel(ABC):
 
         # initial guesses for hyperparameters
         # -----------------------------------
+
+        hdr = "| Restart | "
+
         # lengthscale guess
         dguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
+        hdr = hdr + " len " + " | " 
 
         # multi-output covariance guesses; flattened values such that self.L[self.L_idx] filled by sguess
         # FIXME: there are conditions on what values L may take, I think...
-        sguess = np.random.uniform(1e0, 1e1, size = restarts).reshape([1,-1]).T
-        for i in range(1, self.L_idx[0].shape[0]):
-            sg = np.random.uniform(1e0, 1e1, size = restarts).reshape([1,-1]).T
-            sguess = np.hstack([sguess, sg])
+        for i in range(0, self.L_idx[0].shape[0]):
+            if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
+                sg = np.random.uniform(np.log(1), np.log(10), size = restarts).reshape([1,-1]).T
+            else: # no transform on off-diagonals
+                sg = np.random.uniform(-5.0, 5.0, size = restarts).reshape([1,-1]).T
+            sguess = sg if i == 0 else np.hstack([sguess, sg])
+            hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
 
         # nugget guesses
-        nguess = np.random.uniform(np.log(1.0), np.log(10.0), size = restarts).reshape([1,-1]).T
-        for i in range(1,self.y.shape[1]):
+        for i in range(0,self.y.shape[1]):
             ng = np.random.uniform(np.log(1.0), np.log(10.0), size = restarts).reshape([1,-1]).T
-            nguess = np.hstack([nguess, ng])
+            nguess = ng if i == 0 else np.hstack([nguess, ng])
+            hdr = hdr + " nu{:d} ".format(i) + " | "
 
-        hdr = "Restart | " + " len " + " | " + " var " + " | "
         guess = np.hstack([dguess, sguess, nguess])
 
         # minimimize LLH
         # --------------
         print("Optimizing Hyperparameters...\n" + hdr)
 
-        for ng, g in enumerate(guess):
+        for gn, g in enumerate(guess):
             optFail = False
             try:
                 bestStr = "   "
@@ -307,9 +309,11 @@ class AbstractModel(ABC):
                     bestStr = " ! "
 
                 
-                untransform_res = np.hstack([ np.exp(res.x[0]), res.x[1 : -self.y.shape[1]], np.exp(res.x[-self.y.shape[1]:]) ])
+                self.HP_from_guess(res.x)
+                untransform_res = np.hstack([ self.HP, self.L[self.L_idx].flatten(), self.D ])
 
-                print(" {:02d}/{:02d} ".format(ng + 1, restarts),
+
+                print("|  {:02d}/{:02d} ".format(gn + 1, restarts),
                       "| %s" % ' | '.join(map(str, [fmt(i) for i in untransform_res])),
                       "| {:s} llh: {:.3f}".format(bestStr, -1.0*np.around(res.fun, decimals=4)))
 
@@ -317,12 +321,10 @@ class AbstractModel(ABC):
             except TypeError as e:
                 optFail = True
 
-        self.HP = np.exp(bestRes.x[0])
-        self.L[self.L_idx] = bestRes.x[1:-self.y.shape[1]]
-        self.D = np.exp(bestRes.x[-self.y.shape[1]:])
 
-        #print("\nHyperParams:", ", ".join(map(str, [fmt(i) for i in self.HP])), \
-        #      "\n  (nugget: {:f})".format(self.nugget))
+        self.HP_from_guess(bestRes.x)
+        print("Optimization complete.")
+
 
     #}}}
 

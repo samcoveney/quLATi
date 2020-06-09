@@ -397,8 +397,14 @@ def LaplacianEigenpairs(X, Tri, num = 2**8):
 
 
 #{{{ extend mesh
-def extendMesh(X, Tri, layers, holes):
-    """Extend the mesh with layers of new triangles."""
+def extendMesh(X, Tri, layers, holes, use_average_edge = False):
+    """ Extend the mesh with layers of new triangles.
+        
+        layers: how many layers of new elements to add
+        holes: how many topological holes (e.g. mitral valve, pulmondary veins)
+        use_average_edge: instead of using local edge lengths for mesh extension, use the average edge length for all edges around the holes.
+                          This can help to extend meshes with jagged/sawtooth edges (but perhaps it works less well with an irregular triangulation?).
+    """
 
     print("Extending {:d} holes on mesh with {:d} layers of triangles...".format(holes, layers))
 
@@ -462,6 +468,8 @@ def extendMesh(X, Tri, layers, holes):
 
             edge_X = X[edgeList]
 
+            if use_average_edge:
+                av_edge_length = np.linalg.norm(edge_X[1:,:] - edge_X[:-1,:], axis = 1).mean()
 
             # calculate vector 'normal' which points away from holes
             c, normal = fitPlaneLSTSQ(edge_X)
@@ -484,7 +492,13 @@ def extendMesh(X, Tri, layers, holes):
                 next_i = ii + 1 if ii < len(edgeList) - 1 else 0
                 i = ii
                 
-                newPoint = np.mean(X[edgeList][[i, next_i], :], axis = 0)  + (np.tan(60 * np.pi/180) * np.linalg.norm(X[edgeList[next_i]] - X[edgeList[i]])/2) * normal
+                if use_average_edge:
+                    newPoint = np.mean(X[edgeList][[i, next_i], :], axis = 0) \
+                             + (np.tan(60*np.pi/180) * av_edge_length/2.0) * normal
+                else:
+                    newPoint = np.mean(X[edgeList][[i, next_i], :], axis = 0) \
+                             + (np.tan(60 * np.pi/180) * np.linalg.norm(X[edgeList[next_i]] - X[edgeList[i]])/2) * normal
+
                 new_X = np.vstack([new_X, newPoint])
                 new_Tri = np.vstack([new_Tri, np.array([edgeList[i], edgeList[next_i], new_X.shape[0]-1])])
 

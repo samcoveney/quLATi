@@ -1,0 +1,351 @@
+import numpy as np
+from scipy.spatial.distance import pdist, cdist, squareform
+
+import trimesh
+
+
+#{{{ fit a 2D plane to a set of 3D points using lstsq
+def __fitPlaneLSTSQ(XYZ):
+    """Fit 2D plane to 3D points using LSTSQ.
+
+       Borrowed from: https://gist.github.com/RustingSword/e22a11e1d391f2ab1f2c
+    """
+
+    (rows, cols) = XYZ.shape
+    G = np.ones((rows, 3))
+    G[:, 0] = XYZ[:, 0]  #X
+    G[:, 1] = XYZ[:, 1]  #Y
+    Z = XYZ[:, 2]
+    (a, b, c),resid,rank,s = np.linalg.lstsq(G, Z, rcond = None)
+    normal = (a, b, -1)
+    nn = np.linalg.norm(normal)
+    normal = normal / nn
+    return (c, normal)
+#}}}
+
+
+#{{{ extend mesh
+def extendMesh(X, Tri, layers, holes, use_average_edge = False):
+    """ Extend the mesh with layers of new triangles.
+        
+        layers: how many layers of new elements to add
+        holes: how many topological holes (e.g. mitral valve, pulmondary veins)
+        use_average_edge: instead of using local edge lengths for mesh extension, use the average edge length for all edges around the holes.
+                          This can help to extend meshes with jagged/sawtooth edges (but perhaps it works less well with an irregular triangulation?).
+    """
+
+    print("Extending {:d} holes on mesh with {:d} layers of triangles...".format(holes, layers))
+
+    # loop over the proceedure to build up layers
+    for num in range(layers):
+        print("Layer {:02d}/{:02d}".format(num+1, layers))
+
+        # trimesh
+        mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+
+        # find edges that belong to one face only
+        edges = mesh.edges_unique
+        unique, counts = np.unique(mesh.faces_unique_edges, return_counts = True)
+        args = np.unique(edges[unique[counts == 1]]) # this gives me the vertices in the edge
+
+        #{{{ plot highlighting the edge vertices
+        if False: # and num == layers - 1:
+            fig = plt.figure()
+            ax = fig.add_subplot(111, projection='3d')
+            ax.scatter(X[:,0], X[:,1], X[:,2], alpha = 0.15)
+            ax.scatter(X[args,0], X[args,1], X[args,2], alpha = 0.5, color = "red")
+            plt.show()
+        #}}}
+
+        # useful edge information 
+        which_edges = np.sum( np.isin(edges, args), axis = 1 ) == 2
+        good_edges = edges[which_edges]
+        edgeList_total = []
+
+        # loop over holes in the mesh
+        for hole in range(0,holes):
+
+            # let's try to group the vertices
+            while True:
+                vert = args[np.random.choice(np.arange(args.shape[0]))]#[0]
+                if hole == 0: break
+
+                if vert not in edgeList_total: break
+
+            firstVert = vert  # save firstVert so we now when we get back there
+
+            edgeList = [firstVert]
+
+            while True:
+
+                result = good_edges[ np.any(np.isin(good_edges, vert), axis = 1) , : ]
+
+                # if anti-clockwise triangles, use next vertex along in a looping fashion (0 -> 1, 1 -> 2, 2 -> 0)...
+                if len(edgeList) > 1:
+                    face_next = result[  np.any( np.isin(result, vert), axis = 1 ) & np.all( np.isin(result, edgeList[-2], invert = True), axis = 1)].flatten() 
+                else:
+                    face_next = result[  np.any( np.isin(result, vert), axis = 1 ) ][0,:]
+
+                vert_next = face_next[face_next != vert]
+
+                # break if we get back to where we started
+                if vert_next == firstVert: break
+
+                edgeList = edgeList + [vert_next[0]]
+                vert = vert_next
+
+            edge_X = X[edgeList]
+
+            if use_average_edge:
+                av_edge_length = np.linalg.norm(edge_X[1:,:] - edge_X[:-1,:], axis = 1).mean()
+
+            # calculate vector 'normal' which points away from holes
+            c, normal = __fitPlaneLSTSQ(edge_X)
+
+            # flip normal vector if it points inwards
+            av_X = np.mean(edge_X, axis = 0)
+            inward_vector = av_X - np.mean(X, axis = 0)
+            if normal.dot(inward_vector) < 0: normal = normal * -1
+
+
+            # add new layer of triangles to the edge in question
+            # --------------------------------------------------
+
+            new_X = np.copy(X)
+            new_Tri = np.copy(Tri)
+
+            # firstly connect new vertices to old vertices
+            for ii in range(0, len(edgeList)):
+                
+                next_i = ii + 1 if ii < len(edgeList) - 1 else 0
+                i = ii
+                
+                if use_average_edge:
+                    newPoint = np.mean(X[edgeList][[i, next_i], :], axis = 0) \
+                             + (np.tan(60*np.pi/180) * av_edge_length/2.0) * normal
+                else:
+                    newPoint = np.mean(X[edgeList][[i, next_i], :], axis = 0) \
+                             + (np.tan(60 * np.pi/180) * np.linalg.norm(X[edgeList[next_i]] - X[edgeList[i]])/2) * normal
+
+                new_X = np.vstack([new_X, newPoint])
+                new_Tri = np.vstack([new_Tri, np.array([edgeList[i], edgeList[next_i], new_X.shape[0]-1])])
+
+            # secondly connect new vertices to each other
+            for e, ii in enumerate(range(X.shape[0], new_X.shape[0])):
+
+                next_i = ii + 1 if ii < new_X.shape[0] - 1 else X.shape[0]
+                i = ii
+
+                if next_i == X.shape[0]:
+                    ee = edgeList[0]
+                else:
+                    ee = edgeList[e + 1]
+
+                new_Tri = np.vstack([new_Tri, np.array([i, next_i, ee])])
+
+
+            # keep track of which vertices we have dealt with already
+            edgeList_total = edgeList_total + edgeList
+
+
+            # set old mesh equal to new mesh
+            X = new_X
+            Tri = new_Tri
+
+
+    print("Extended mesh has {:d} vertices and {:d} faces.".format(X.shape[0], Tri.shape[0]))
+
+
+    # create another mesh, get edges and centroids
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+    edges = mesh.edges_unique
+    centroids = mesh.triangles_center
+
+    return X, Tri, edges, centroids
+#}}}
+
+
+#{{{ anneal positions of a subset of mesh vertices, optimizing for even spatial distribution
+def subset_anneal(X, Tri, num, runs, choice = None):
+    """Use simulated annealing to distribute vertex points over a manifold."""
+
+    print("Optimizing inducing point positions with simulated annealing...")
+
+    # trimesh object
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+
+    # firstly, find a spread out set of vertices where we had observations
+    num_designs = runs
+
+    # initial design
+    if choice is None:
+        choice = np.unique(np.random.choice(X.shape[0], size = num)) # NOTE: fixed at 100 locations to do inference
+
+    points = X[choice]
+    dists = pdist(points)
+    POWER = 2 # power to which inverse distance is raised; 2 seems to be a good choice
+    best_cost = ((1.0 / dists)**POWER).sum() # sum for energy
+
+    # run the simulated annealing routine
+    for i in range(1, num_designs + 1):
+
+        # choose a vertex that we are going to try to move around
+        choice_ind = np.random.choice(choice.shape[0], size = 1)
+
+        # which vertices neighbour the current point at choice[choice_ind]?
+        neigh = mesh.vertex_neighbors[choice[choice_ind]][0] 
+
+        # choose a random neighbour
+        neigh_ind = np.random.choice(len(neigh), size = 1)[0]
+
+        # calculate distances between all points and the point in question
+        old_dists = cdist(points[choice_ind], points)[0] #  at initial position
+        new_dists = cdist(X[neigh[neigh_ind]][None,:], points)[0] # at suggested new location
+
+        # calculate the energy as sum of squared inverse distances
+        # (ignore distance between the point and itself (which is zero) when calculating the energy)
+        old_energy = (1.0 / old_dists[:choice_ind[0]]**POWER).sum() + (1.0 / old_dists[choice_ind[0]+1:]**POWER).sum()
+        new_energy = (1.0 / new_dists[:choice_ind[0]]**POWER).sum() + (1.0 / new_dists[choice_ind[0]+1:]**POWER).sum()
+
+        # energy difference
+        diff_energy = new_energy - old_energy
+
+        # if using temperature, which does not seem to help much
+        #temperature = 1e-5*( 1.0 - (i+1)/num_designs )
+        #print("temp:", temperature)
+        #prob = np.exp(-diff_energy/temperature)
+        #print("prob:", prob)
+
+        if (diff_energy < 0): # or (prob > np.random.uniform()):
+            best_cost = best_cost + (new_energy - old_energy) # sum for energy - probably want E = sum(dists^2) to square this energy though...
+            #print("new energy:", best_cost)
+
+            # update the best choice
+            choice[choice_ind] = neigh[neigh_ind]
+            points = X[choice]
+
+    return choice
+#}}}
+
+
+#{{{ triangulate a subset of mesh vertices into a new triangulation
+def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge = True):
+
+    if layers > 0:
+        X, Tri, __, __ = extendMesh(X, Tri, layers = layers, holes = holes, use_average_edge = use_average_edge)
+    
+
+    #{{{ for each point in high res mesh, which point X[choice] is nearest?
+    print("Calculating nearest inducing point")
+    closest_c = np.empty(X.shape[0], dtype = np.int32)
+
+    chunkSize = 10000
+    P = X.shape[0]
+    print("Calculating closest new vertex for {:d} vertices in high res mesh".format(P))
+    if P > chunkSize:
+        chunkNum = int(np.ceil(P / chunkSize))
+        print("  Using", chunkNum, "chunks of", chunkSize)
+    else:
+        chunkNum = 1
+
+    ## loop over outputs (i.e. over emulators)
+    #printProgBar(0, chunkNum, prefix = '  Progress:', suffix = '')
+    for c in range(chunkNum):
+        L = c*chunkSize
+        U = (c+1)*chunkSize if c < chunkNum -1 else P
+
+        closest_c[L:U] = np.argmin(cdist(X[L:U], X[choice,:]), axis = 1)
+        #printProgBar(U+1, P, prefix = '  Progress:', suffix = '')
+        #printProgBar(c+1, chunkNum, prefix = '  Progress:', suffix = '')
+
+    #}}}
+
+
+    #{{{ build an edge point of connected regions
+    print("Building edge list...")
+
+    # find edges that belong to one face only
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)  # NOTE: !!!! WARNING! REMEMBER TO PASS THE RELEVANT PARTS OF 'TRI' !!!!
+    edges = mesh.edges_unique # these edges are for the high resolution mesh
+
+    closest_c_edges = closest_c[edges.flatten()].reshape(-1,2) # replace index into high res mesh with index of closest inducing point c
+
+    # check where these edges belond to two different Voronoi regions i.e. keep edges where the connecting regions are different
+    condition = ( (closest_c_edges[:,1] - closest_c_edges[:,0]) != 0 )
+
+    # these edges should be between the inducing points
+    edge_list = closest_c_edges[condition]
+
+    # keep only the unique edges that connect different regions
+    edge_list = np.sort(edge_list, axis = 1)
+    edge_list = np.unique(edge_list, axis = 0)
+
+    #}}}
+
+ 
+    #{{{ make triangulation from edge list
+    
+    print("Building face list...")
+    face_list = []
+    for cc, c in enumerate(choice): # loop over inducing points
+
+        which_edges = edge_list[np.any(np.isin(edge_list, cc), axis = 1)]
+
+        tmp = np.unique(which_edges)
+        tmp = np.unique(tmp[tmp != cc])
+
+        # trying to find a single edge that contains two of these vertices
+        ind = (np.sum(np.isin(edge_list, tmp), axis = 1) == 2)
+        
+        try:
+            tmp_2 = np.unique(edge_list[ind], axis = 1)
+
+            for i in tmp_2:
+                lst = list(i)
+                lst.append(cc)
+                face_list.append(lst)
+
+        except:
+            pass
+        
+    face_list = np.array(face_list, np.int32)
+
+    # make sure faces are not repeated
+    face_list = np.sort(face_list, axis = 1)
+    face_list = np.unique(face_list, axis = 0)
+
+    #}}}
+
+
+    #{{{ delete some poor quality triangles that may have formed on the edge
+
+    trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = face_list, process = False)
+    
+    if True:
+        # two loops of removing obtuse triangles in the edge should help
+        for i in range(2):
+            # which faces have large angles
+            angles = trimesh_obj.face_angles # angles within each face, ordered same way as vertices are listed in face
+            DEG_TO_RAD = np.pi/180.0
+            bad_triangles = np.any(angles > 135 * DEG_TO_RAD, axis = 1)
+
+            # which faces border the holes?
+            edges = trimesh_obj.edges_unique
+            unique, counts = np.unique(trimesh_obj.faces_unique_edges, return_counts = True)
+
+            is_edge_face = np.any(np.isin(trimesh_obj.faces_unique_edges, unique[counts == 1]), axis = 1) # which faces contain an edge that belongs to only one face?
+
+            face_list = face_list[~(bad_triangles & is_edge_face)]
+
+            trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = face_list, process = False)
+
+    #}}}
+
+    # fix the normals to be consistent
+    trimesh_obj.fix_normals()
+
+    # return the faces
+    return X[choice], trimesh_obj.faces
+#}}}
+
+

@@ -50,11 +50,16 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
 
         #{{{ plot highlighting the edge vertices
         if False: # and num == layers - 1:
-            fig = plt.figure()
-            ax = fig.add_subplot(111, projection='3d')
-            ax.scatter(X[:,0], X[:,1], X[:,2], alpha = 0.15)
-            ax.scatter(X[args,0], X[args,1], X[args,2], alpha = 0.5, color = "red")
-            plt.show()
+            import pyvista as pv
+            plotter = pv.Plotter()
+
+            plt_surf = pv.PolyData(X, np.hstack([ np.full(Tri.shape[0], 3)[:,None] , Tri ]))
+            plotter.add_mesh(plt_surf, show_edges = True, opacity = 1.0) # add color to mesh here
+
+            plt_points = pv.PolyData(X[args])
+            plotter.add_mesh(plt_points, color = "red", point_size = 10, render_points_as_spheres = True) # add color to mesh here
+
+            plotter.show()
         #}}}
 
         # useful edge information 
@@ -86,10 +91,27 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
                 else:
                     face_next = result[  np.any( np.isin(result, vert), axis = 1 ) ][0,:]
 
+                # NOTE: attempt to fix the problem where a face has two edges with no neighbouring faces
+                #try:
+                #    vert_next = [face_next[face_next != vert][-1]]
+                #except:
+
                 vert_next = face_next[face_next != vert]
 
+                #print("face_next:", face_next)
+                #print("vert_next:", vert_next)
+                #print("firstVert:", firstVert)
+
+                #plt_problem = pv.PolyData(X[vert_next])
+                #plotter.add_mesh(plt_problem, color = "blue", point_size = 10, render_points_as_spheres = True) # add color to mesh here
+                #plotter.render()
+                #input("[WAIT]")
+
                 # break if we get back to where we started
+                #try:
                 if vert_next == firstVert: break
+                #except:
+
 
                 edgeList = edgeList + [vert_next[0]]
                 vert = vert_next
@@ -151,7 +173,6 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
             # set old mesh equal to new mesh
             X = new_X
             Tri = new_Tri
-
 
     print("Extended mesh has {:d} vertices and {:d} faces.".format(X.shape[0], Tri.shape[0]))
 
@@ -341,11 +362,99 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
 
     #}}}
 
+    # make sure no element has two edges bordering a hole
+    Tri = fix_edges(X[choice], trimesh_obj.faces)
+
     # fix the normals to be consistent
+    trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = Tri, process = False)
     trimesh_obj.fix_normals()
 
     # return the faces
     return X[choice], trimesh_obj.faces
+#}}}
+
+
+#{{{ ensure no elements exist that have two edges bordering a hole
+def fix_edges(X, Tri):
+    """Ensure that no face has two edges bordering a hole, by insertion of additional elements."""
+
+    # trimesh
+    mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
+
+    # find edges that belong to one face only
+    edges = mesh.edges_unique # list of unique edges
+    unique, counts = np.unique(mesh.faces_unique_edges, return_counts = True) # which edges belong to only one face?
+
+    # which unique edges appear only once in the entire face list (i.e. are not shared between two faces?)
+    args = np.unique(edges[unique[counts == 1]]) # this gives me the vertices in the edge
+
+    # which face has 3 vertices that are in a unique edge?
+    dodgy_face_idx = np.where(np.isin(mesh.faces, args).sum(axis = 1) == 3)[0]
+    print("dodgy_face_idx:", dodgy_face_idx)
+
+    # loop over these dodgy faces
+    for dfi in dodgy_face_idx:
+        dodgy_face = mesh.faces[dfi]
+        print("dodgy_face:", dodgy_face)
+
+        # three edges of the dodgy face
+        three_edges = mesh.faces_unique_edges[dfi]
+        print("three_edges:", three_edges)
+
+        res = np.isin(three_edges, unique[counts == 1])
+        print("res:", res)
+
+        bad_edges = edges[three_edges[res]]
+        print("bad_edges:", bad_edges)
+
+
+        # which vertex is in the tip of the element? (i.e. shared by two edges)
+        v, c = np.unique(bad_edges.flatten(), return_counts = True)
+        tip_vert = v[c == 2]
+        other_vert = v[c == 1]
+        print("tip vertex:", tip_vert)
+        print("other vertex:", other_vert)
+
+
+        # which two vertices should we consider connecting the tip vertex to?
+        # a) find edges containing these other verts
+        #print(edges[unique[counts == 1]])
+        print( np.any(np.isin(edges[unique[counts == 1]], other_vert), axis = 1) )
+        new_edges = edges[unique[counts == 1]][np.any(np.isin(edges[unique[counts == 1]], other_vert), axis = 1)]
+        print("new_edges:", new_edges)
+
+        points_to_consider, cc = np.unique(new_edges, return_counts = True)
+        points_to_consider = points_to_consider[cc == 1]
+
+        print("points_to_consider:", points_to_consider)
+
+        best_point = points_to_consider[np.argmin(cdist(X[[tip_vert]],  X[points_to_consider]))]
+        print("best_points:", best_point)
+
+        test = new_edges[np.any(new_edges == best_point, axis = 1)].flatten() 
+        print("test:", test)
+
+        new_element = np.hstack([test, tip_vert])
+        print("new_element:", new_element)
+
+        input("[WAIT]")
+
+        Tri = np.vstack([Tri, new_element])
+
+        if False:
+            import pyvista as pv
+            plotter = pv.Plotter()
+
+            plt_surf = pv.PolyData(X, np.hstack([ np.full(Tri.shape[0], 3)[:,None] , Tri ]))
+            plotter.add_mesh(plt_surf, show_edges = True, opacity = 1.0) # add color to mesh here
+
+            plt_points = pv.PolyData(X[dodgy_face])
+            plotter.add_mesh(plt_points, color = "red", point_size = 10, render_points_as_spheres = True) # add color to mesh here
+
+            plotter.show()
+
+    return Tri
+
 #}}}
 
 

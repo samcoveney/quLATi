@@ -379,7 +379,7 @@ def LaplacianEigenpairs(X, Tri, num = 2**8):
 
 
 # main function
-def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
+def eigensolver(X, Tri, holes, num = 2**8, layers = 10, calc_gradV = True, use_average_edge = False):
     """Solve the Laplacian eigenproblem for the atrial mesh.
 
        Method:
@@ -401,7 +401,7 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
 
     # 1. extend the mesh
     # ------------------
-    X, Tri, edges, centroids = extendMesh(X, Tri, layers, holes)
+    X, Tri, edges, centroids = extendMesh(X, Tri, layers, holes, use_average_edge = use_average_edge)
     extended_num_verts = X.shape[0] # save number of vertices of extended mesh
 
     # 2. subdivide the mesh
@@ -413,14 +413,20 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10):
     # ---------------------------------------------------------
     Q, V = LaplacianEigenpairs(newX, newTri, num = num)
     
-    # 4. get eigenfunction gradients at mesh centroids
-    # ------------------------------------------------
-    gradV = gradientEigenvectors(newX, newTri, vertsInFace, V)
+
+    if calc_gradV:
+        # 4. get eigenfunction gradients at mesh centroids
+        # ------------------------------------------------
+        gradV = gradientEigenvectors(newX, newTri, vertsInFace, V)
 
 
-    # keep V only at original mesh vertices and centroids
-    V = np.vstack( [ V[0:orig_num_verts] , V[extended_num_verts:extended_num_verts+orig_num_faces] ] )
+        # keep V only at original mesh vertices and centroids
+        V = np.vstack( [ V[0:orig_num_verts] , V[extended_num_verts:extended_num_verts+orig_num_faces] ] )
 
-    return Q, V[0:orig_num_verts+orig_num_faces], gradV[0:orig_num_faces, :, :], newX[extended_num_verts:extended_num_verts+orig_num_faces]
+        return Q, V[0:orig_num_verts+orig_num_faces], gradV[0:orig_num_faces, :, :], newX[extended_num_verts:extended_num_verts+orig_num_faces]
+
+    else:
+
+        return Q, V[0:orig_num_verts+orig_num_faces], None, newX[extended_num_verts:extended_num_verts+orig_num_faces]
 
 

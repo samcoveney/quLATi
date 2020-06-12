@@ -63,8 +63,8 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
         #}}}
 
         # useful edge information 
-        which_edges = np.sum( np.isin(edges, args), axis = 1 ) == 2
-        good_edges = edges[which_edges]
+        which_edges = np.sum( np.isin(edges[unique[counts == 1]], args), axis = 1 ) == 2 # FIXME: case of an element 'tooth' on edge is capture here, needs discarding
+        good_edges = edges[unique[counts == 1]][which_edges]
         edgeList_total = []
 
         # loop over holes in the mesh
@@ -84,34 +84,19 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
             while True:
 
                 result = good_edges[ np.any(np.isin(good_edges, vert), axis = 1) , : ]
+                #print("vert:", vert)
+                #print("result:", result)
 
                 # if anti-clockwise triangles, use next vertex along in a looping fashion (0 -> 1, 1 -> 2, 2 -> 0)...
                 if len(edgeList) > 1:
                     face_next = result[  np.any( np.isin(result, vert), axis = 1 ) & np.all( np.isin(result, edgeList[-2], invert = True), axis = 1)].flatten() 
                 else:
                     face_next = result[  np.any( np.isin(result, vert), axis = 1 ) ][0,:]
-
-                # NOTE: attempt to fix the problem where a face has two edges with no neighbouring faces
-                #try:
-                #    vert_next = [face_next[face_next != vert][-1]]
-                #except:
+                #print("face_next:", face_next)
 
                 vert_next = face_next[face_next != vert]
 
-                #print("face_next:", face_next)
-                #print("vert_next:", vert_next)
-                #print("firstVert:", firstVert)
-
-                #plt_problem = pv.PolyData(X[vert_next])
-                #plotter.add_mesh(plt_problem, color = "blue", point_size = 10, render_points_as_spheres = True) # add color to mesh here
-                #plotter.render()
-                #input("[WAIT]")
-
-                # break if we get back to where we started
-                #try:
                 if vert_next == firstVert: break
-                #except:
-
 
                 edgeList = edgeList + [vert_next[0]]
                 vert = vert_next
@@ -363,10 +348,10 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
     #}}}
 
     # make sure no element has two edges bordering a hole
-    Tri = fix_edges(X[choice], trimesh_obj.faces)
+    #Tri = fix_edges(X[choice], trimesh_obj.faces)
+    #trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = Tri, process = False)
 
     # fix the normals to be consistent
-    trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = Tri, process = False)
     trimesh_obj.fix_normals()
 
     # return the faces

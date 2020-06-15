@@ -1,5 +1,6 @@
 import numpy as np
 from scipy.spatial.distance import pdist, cdist, squareform
+import random
 
 import trimesh
 
@@ -173,7 +174,15 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
 
 #{{{ anneal positions of a subset of mesh vertices, optimizing for even spatial distribution
 def subset_anneal(X, Tri, num, runs, choice = None):
-    """Use simulated annealing to distribute vertex points over a manifold."""
+    """ Use simulated annealing to distribute vertex points over a manifold.
+    
+        Arguments:
+        X: 3D vertex coordinates
+        Tri: elements of triangulation
+        num: number of points in the subset
+        runs: maximum number of runs
+        choice: indices of a previously annealed subset
+    """
 
     print("Optimizing inducing point positions with simulated annealing...")
 
@@ -185,7 +194,11 @@ def subset_anneal(X, Tri, num, runs, choice = None):
 
     # initial design
     if choice is None:
-        choice = np.unique(np.random.choice(X.shape[0], size = num)) # NOTE: fixed at 100 locations to do inference
+        #choice = np.unique(np.random.choice(X.shape[0], size = num))
+        choice = np.arange(X.shape[0])
+        np.random.shuffle(choice)
+        choice = choice[0:num]
+        print("choice.shape:", choice.shape)
 
     points = X[choice]
     dists = pdist(points)
@@ -193,6 +206,7 @@ def subset_anneal(X, Tri, num, runs, choice = None):
     best_cost = ((1.0 / dists)**POWER).sum() # sum for energy
 
     # run the simulated annealing routine
+    count = 0
     for i in range(1, num_designs + 1):
 
         # choose a vertex that we are going to try to move around
@@ -223,12 +237,22 @@ def subset_anneal(X, Tri, num, runs, choice = None):
         #print("prob:", prob)
 
         if (diff_energy < 0): # or (prob > np.random.uniform()):
+            count += 1
+            cum_sum.append(count/runs)
             best_cost = best_cost + (new_energy - old_energy) # sum for energy - probably want E = sum(dists^2) to square this energy though...
             #print("new energy:", best_cost)
 
             # update the best choice
             choice[choice_ind] = neigh[neigh_ind]
             points = X[choice]
+        
+        if i % 10000 == 0:
+            perc = 100*count/10000
+            print("Percentage of successful moves: {:4.1f}%".format(perc), end = "\r")
+            count = 0
+            if perc < 1.0: break
+
+    print("\n")
 
     return choice
 #}}}

@@ -91,7 +91,7 @@ class AbstractModel(ABC):
     
         Much less flexible. Will not be able to accept gradient observations or auxillary observations.
 
-        In theory, heteroscedastic noise can be used, but for simplicity is not included in this model framework.
+        Heteroscedastic noise can now be used.
 
         May or may not be able to prediction the posterior gradients with the reduced rank framework...
     """
@@ -161,12 +161,17 @@ class AbstractModel(ABC):
     #}}}
 
     # {{{ data handling including scalings
-    def set_data(self, y, vertex):
+    def set_data(self, y, vertex, yerr = None):
         """Set data for interpolation, scaled and centred."""
 
         # set mean and stdev of y
         self.y_mean, self.y_std = np.mean(y), np.std(y)
         self.y = self.scale(y, std = False)
+
+        if yerr is None:
+            self.yerr = np.zeros(y.shape[0])
+        else:
+            self.yerr = self.scale(yerr, std = True)
 
         self.vertex = vertex
 
@@ -208,90 +213,112 @@ class AbstractModel(ABC):
         self.HP = np.exp(guess)
         if self.nugget_train: self.nugget = self.HP[self.nugget_index]
 
-        # set outputs and inputs
-        y = self.y
-        V = self.V[self.vertex]
-
-        # define Q = phi SD phi + nugget I, i.e. the covariance matrix
-
+        # spectral density
         SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) ) # NOTE: multiply SD by signal variance
         SD = self.HP[1] * SD
-        Z = np.diag(self.nugget/SD) + (V.T).dot(V) # FIXME: we can calculate V.T.dot(V) just once, in advance
 
-        try: # more stable
+        # set outputs and inputs
+        y = self.y
+        V = np.sqrt(SD)*self.V[self.vertex] # NOTE: absorb SD(eigenvalues) into the eigenvectors
+
+        # define Q := phi phi^T + D
+        # D is diagonal matrix of observation variances + nugget, but can represent as a vector only for ease
+
+        # form noise matrix (diagonal, store as vector)
+        D = self.yerr**2 + self.nugget
+        invD = 1.0/D
+
+        # form Z (different from Solin paper)
+        ones = np.eye(SD.shape[0])
+        Z = ones + (V.T).dot(invD[:,None]*V) # invD is diagonal, faster than diag(invD).dot(V)
+
+        #{{{ ###### Woodbury inversion tests #######
+        if False:
+            E = np.diag(D)
+            F = V
+            H = F.T
+            G = np.diag(np.ones(SD.shape[0]))
+
+            # standard invserse
+            Q = E + F.dot(G).dot(H)
+            invQ = np.linalg.inv(Q)
+
+            # Woodbury inverse
+            invE = np.linalg.inv(E)
+            Z = np.linalg.inv(G) + H.dot(invE).dot(F)
+            invZ = np.linalg.inv(Z)
+            #invQ_wb = invE - invE.dot(F).dot(invZ).dot(H).dot(invE)
+            invQ_wb = invE - (invE.dot(F)).dot(invZ).dot(H.dot(invE))
+
+            print("close?", np.allclose(invQ, invQ_wb))
+            input("waiting...")
+
+        #}}} ######
+
+        if True:
 
             # attempt cholesky factorization
-            L = linalg.cho_factor(Z)
+            # ------------------------------
+            #L = linalg.cho_factor(Z)
+            L = linalg.cholesky(Z, lower = True) # NOTE: trying cholesky instead of cho_solve
             cho_success = True
             #print("cholesky success")
 
-            # log |Q| = (n - m) log(sig_n^2) + log(|Z|) + sum_j log(SD)
-            logDetZ = 2.0*np.sum(np.log(np.diag(L[0])))
-            log_Q = (y.shape[0] - self.Q.shape[0]) * np.log(self.nugget) \
-                  + logDetZ \
-                  + np.sum(np.log(SD))
+            # log |Q| = log |Z| + log |D|
+            # ---------------------------
+            #logDetZ = 2.0*np.sum(np.log(np.diag(L[0])))
+            logDetZ = 2.0*np.sum(np.log(np.diag(L))) # NOTE: trying cholesky instead of cho_solve
+            log_Q = logDetZ + np.sum(np.log(D))  # SD absorbed into eigenvectors
 
             # y^T Q^-1 y
-            yQy = ( y.dot(y) - y.dot(V).dot( linalg.cho_solve(L, V.T.dot(y)) ) ) / self.nugget
+            # ----------
+            tmp = V.T.dot(invD*y)
+            #yQy = y.dot(invD*y) - (tmp.T).dot( linalg.cho_solve(L, tmp) )
+            # NOTE: trying cholesky instead of cho_solve
+            tmp = (tmp.T).dot( linalg.solve_triangular(L.T, linalg.solve_triangular(L, tmp, lower = True)) )
+            yQy = y.dot(invD*y) - tmp
 
             # LLH = 1/2 log|Q| + 1/2 y^T Q^-1 y + n/2 log(2 pi)
             n_log_2pi = y.shape[0]*np.log(2*np.pi)
             llh = 0.5 * (log_Q + yQy + n_log_2pi)
 
-        except: # less stable, less fast, but almost always works
 
+            #{{{ ###### more Woodbury inversion tests #######
+            if False:
+                print("--------------")
+                print("log|Q|:", log_Q)
+                print("yKy:", yQy)
+                print("llh_rr:", llh)
+                K = V.dot(V.T) + np.diag(D)
+                L = linalg.cho_factor(K)        
+                invK_y = linalg.cho_solve(L, y)
+                logDetK = 2.0*np.sum(np.log(np.diag(L[0])))        
+                yKy = ( y.T ).dot( invK_y )
+                llh_old = 0.5 * ( logDetK + yKy + y.shape[0]*np.log(2*np.pi) )
+                print("log|Q| old:", logDetK)
+                print("yKy old:", yKy)
+                print("llh_old:", llh_old)
+                print("--------------")
+            #}}} ###### 
+
+        try: # more stable
+            pass
+
+        # NOTE: version which avoids Cholesky not implemented yet
+
+        except np.linalg.linalg.LinAlgError as e:
             cho_success = False
-            #print("cholesky failed")
+            print("\n[WARNING]: Matrix not PSD for", self.HP, ", not fit.\n")
+            return None
 
-            try:
-                # direct inverse of Q
-                invZ = np.linalg.inv(Z)
-
-                # log |Q| = (n - m) log(sig_n^2) + log(|Z|) + sum_j log(SD)
-                logDetZ = np.log( linalg.det(Z) )
-                log_Q = (y.shape[0] - self.Q.shape[0]) * np.log(self.nugget) \
-                      + logDetZ \
-                      + np.sum(np.log(SD))
-
-                # y^T Q^-1 y
-                yQy = ( y.dot(y) - y.dot(V).dot( invZ .dot( V.T.dot(y)) ) )  / self.nugget
-
-                # LLH = 1/2 log|Q| + 1/2 y^T Q^-1 y + n/2 log(2 pi)
-                n_log_2pi = y.shape[0]*np.log(2*np.pi)
-                llh = 0.5 * (log_Q + yQy + n_log_2pi)
-
-            except np.linalg.linalg.LinAlgError as e:
-                print("\n[WARNING]: Matrix not PSD for", self.HP, ", not fit.\n")
-                return None
-
-            except ValueError as e:
-                print("\n[WARNING]: Ill-conditioned matrix for", self.HP, ", not fit.\n")
-                return None
+        except ValueError as e:
+            cho_success = False
+            print("\n[WARNING]: Ill-conditioned matrix for", self.HP, ", not fit.\n")
+            return None
 
         return llh
 
         # NOTE: LLH gradients for reduced-rank formulation not implemented yet
-
-        #if grad == False:
-        #    return llh
-        #else:
-        #
-        #    grad_llh = np.empty(guess.size)
-        #    for hp in range(guess.size):
-        #        grad_hp = grad_K[:,:,hp]
-        #
-        #        if cho_success:
-        #            invK_grad_hp = linalg.cho_solve(L, grad_hp)
-        #        else:
-        #            invK_grad_hp = invK.dot(grad_hp)
-        #
-        #        grad_llh[hp] = 0.5 * ( - (y.T).dot(invK_grad_hp).dot(invK_y) + np.trace(invK_grad_hp) )
-        #
-        #        if ~np.isfinite(grad_llh[hp]):
-        #            print("\n[WARNING]: gradient(LLH) not finite", self.HP, ", not fit.\n")
-        #            return None
-        #
-        #    return llh, grad_llh*self.HP # dLLH/d_guess = dLLH/d_HP * d_HP/d_guess = dLLH/d_HP * HP
         
     #}}}
 
@@ -370,8 +397,8 @@ class AbstractModel(ABC):
 
     #}}}
 
-    #{{{ posterior distribution
-    def posterior(self, pointwise = False):
+    #{{{ posterior distribution, old version with no specified heteroscedastic observation noise
+    def posterior(self, indices = None, pointwise = True):
         """Calculates GP posterior mean and variance and returns *total* posterior mean and square root of pointwise variance
 
            NOTES:
@@ -382,70 +409,59 @@ class AbstractModel(ABC):
         # FIXME: Need to implement a way to calculate the posterior for a subset of vertices (usefully, for first self.X.shape[0] positions i.e. vertices)
         #        This is because we will want to take posterior samples, and so need the full posterior covariance
 
-        # set outputs and inputs
-        y = self.y
-        V = self.V[self.vertex]
-
-        # define Q = phi SD phi + nugget I, i.e. the covariance matrix
-
+        # spectral density
         SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) ) # NOTE: multiply SD by signal variance
         SD = self.HP[1] * SD
-        Z = np.diag(self.nugget/SD) + (V.T).dot(V)
 
-        try: # more stable
+        # set outputs and inputs
+        y = self.y
+        V = np.sqrt(SD)*self.V[self.vertex] # NOTE: absorb SD(eigenvalues) into the eigenvectors
 
-            # attempt cholesky factorization
-            L = linalg.cho_factor(Z)
-            cho_success = True
+        # where to calculate the posterior
+        if indices is None: indices = np.arange(self.V.shape[0])
+        V_other = np.sqrt(SD)*self.V[indices]
 
-            Ef = self.V.dot( linalg.cho_solve(L, V.T.dot(y)) )   
+        # form noise matrix (diagonal, store as vector)
+        D = self.yerr**2 + self.nugget
+        invD = 1.0/D
+
+        # explicit formation of covariances 
+        k_train = V.dot(V.T) + np.diag(D)
+        k_cross = V_other.dot(V.T)
+
+        try:
+
+            L = linalg.cho_factor(k_train)
+            Ef = k_cross.dot(linalg.cho_solve(L, y))
             self.post_mean = Ef
 
-            try:
-                Vf = self.nugget * self.V.dot( linalg.cho_solve(L, self.V.T) )
+            if pointwise == False:
+                k_pred = V_other.dot(V_other.T)
+                Vf = k_pred - k_cross.dot(linalg.cho_solve(L, k_cross.T))
+                self.post_var = Vf
+            else:
+                k_pred = np.einsum("ij, ij -> i", V_other, V_other)
+                tmp = np.einsum("ij, ji -> i", k_cross, linalg.cho_solve(L, k_cross.T))
+                Vf = k_pred - tmp 
                 self.post_var = Vf
 
-            except MemoryError as me:
-                print("[MEMORY ERROR]: cannot store such a big posterior covariance matrix! Calculate pointwise posterior variance only.")
+        except MemoryError as me:
+            print("[MEMORY ERROR]: cannot store such a big posterior covariance matrix! Try 'indices' or 'pointwise' arguments to this function.")
 
-                Vf = self.nugget * self.V.T * ( linalg.cho_solve(L, self.V.T) )
-                Vf = Vf.sum(axis = 0)
+            print("[WARNING]: setting posterior variance as None.")
+            Vf = None
+            self.post_var = Vf
 
-                print("Success! We have pointwise posterior.")
+        except np.linalg.linalg.LinAlgError as e:
+            print("\n[WARNING]: Matrix not PSD.\n")
+            return None
 
-
-        except: # less stable, less fast, but almost always works
-
-            cho_success = False
-
-            try:
-                # direct inverse of Q
-                invZ = np.linalg.inv(Z)
-            
-                Ef = self.V.dot( invZ.dot( V.T.dot(y) ) )
-                self.post_mean = Ef
-
-                try:
-                    Vf = self.nugget * self.V.dot( invZ.dot( self.V.T ) )
-                    self.post_var = Vf
-
-                except MemoryError as me:
-                    print("[MEMORY ERROR]: cannot store such a big posterior covariance matrix! Calculate pointwise posterior variance only.")
-
-                    Vf = self.nugget * self.V.T * ( invZ.dot( self.V.T ) )
-                    Vf = Vf.sum(axis = 0)
+        except ValueError as e:
+            print("\n[WARNING]: ValueError of some sort.\n")
+            return None
 
 
-            except np.linalg.linalg.LinAlgError as e:
-                print("\n[WARNING]: Matrix not PSD.\n")
-                return None
-
-            except ValueError as e:
-                print("\n[WARNING]: Ill-conditioned matrix.\n")
-                return None
-
-
-        # return the pointwise posterior, even if we calculated (and saved) the full posterior (actually, stdev is returned)
+        # return the posterior mean and posterier (pointwise) standard deviation
         if Ef.shape == Vf.shape:
             return self.meanFunction + self.unscale(Ef), self.unscale(np.sqrt(Vf), std = True)
         else: 
@@ -494,44 +510,31 @@ class AbstractModel(ABC):
         
            NOTES:
            * the returned *total* posterior mean *of gradient* is the sum of the GP posterior mean of gradient and the mean function gradient
-           * the GP posterior variance *of gradient* is only calculated pointwise, giving a 3x3 matrix at every vertex
+           * the GP posterior variance *of gradient* is only calculated pointwise, giving a 3x3 matrix at every centroid
 
         """
 
-        # NOTE: there will be more memory efficient way to perform these calculations
-
         print("Calculating posterior distribution of gradient...")
 
-        # we'll use a less elegant equation that nonetheless makes use of the cheaper inversion
+        # spectral density
+        SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) ) # NOTE: multiply SD by signal variance
+        SD = self.HP[1] * SD
 
         # set outputs and inputs
         y = self.y
-        V = self.V[self.vertex]
+        D = self.yerr**2 + self.nugget
 
-        # define Q = phi SD phi + nugget I, i.e. the covariance matrix
-
-        SD, _ = self.spectralDensity( self.HP[0], np.sqrt(self.Q) )
-        SD = self.HP[1] * SD
-        
-        # easy calculation of inverse of covariance
-        Z = np.diag(self.nugget/SD) + (V.T).dot(V)
-
-        try: # use cholesky decomposition
-            L = linalg.cho_factor(Z)
-            invK = ( np.eye(y.shape[0]) - V.dot( linalg.cho_solve(L, V.T)) ) / self.nugget
-        except: # direction inverse
-            invK = ( np.eye(y.shape[0]) - V.dot(np.linalg.inv(Z)).dot(V.T) ) / self.nugget
-
-        # check that this really is the inverse of the covariance
-        #covTrain = self.makeCovar("training")
-        #orig_invK = np.linalg.inv(covTrain)
-        #print("sum", np.sum(invK - orig_invK))
+        # absorb SD into the eigenvectors
+        # -------------------------------
+        V = np.sqrt(SD)*self.V[self.vertex] # NOTE: absorb SD(eigenvalues) into the eigenvectors
+        k_train = V.dot(V.T) + np.diag(D)
+        invK = np.linalg.inv(k_train) # NOTE: direct inverse used in einsum calculations below
 
         # gradient kernel
-        a = self.gradV.reshape(-1,self.V.shape[1])
-        b = self.V[self.vertex]
-        gradKern = a.dot( (b*SD).T ) # faster like this
-        grad2Kern = np.einsum('ijk, ilk -> ijl', SD * self.gradV, self.gradV)
+        gradV = np.sqrt(SD)*self.gradV 
+        a = gradV.reshape(-1,self.V.shape[1])
+        gradKern = a.dot( (V).T ) # faster like this
+        grad2Kern = np.einsum('ijk, ilk -> ijl', gradV, gradV)
 
         # posterior mean of gradient
         # --------------------------
@@ -543,7 +546,7 @@ class AbstractModel(ABC):
         zeta = np.einsum('klp , kjp -> klj', zeta.reshape(-1, 3, y.shape[0]), gradKern.reshape(-1, 3, y.shape[0])) # reshape for cross terms on different directions
         self.grad_post_var = grad2Kern - zeta
 
-        return self.grad_meanFunction + self.unscale(self.grad_post_mean, std = True)
+        return self.grad_meanFunction + self.unscale(self.grad_post_mean, std = True) # NOTE: not a standard deviation, but should not be shifted by data centering
 
     #}}}
 

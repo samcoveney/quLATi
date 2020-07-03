@@ -148,12 +148,17 @@ class AbstractModel(ABC):
     #}}}
 
     # {{{ data handling including scalings
-    def set_data(self, y, vertex):
+    def set_data(self, y, vertex, yerr = None):
         """Set data for interpolation, scaled and centred."""
 
         # set mean and stdev of y
         self.y_mean, self.y_std = np.mean(y, axis = 0), np.std(y, axis = 0)
         self.y = self.scale(y, std = False)
+
+        if yerr is None:
+            self.yerr = np.zeros(y.shape)
+        else:
+            self.yerr = self.scale(yerr, std = True)
 
         self.vertex = vertex
 
@@ -182,12 +187,18 @@ class AbstractModel(ABC):
         # set hyperparameter values
         self.HP = np.exp(guess[0])
 
-        # transform L carefully so that diagonals are positive
-        for i in range(0, self.L_idx[0].shape[0]):
-            if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
-                self.L[self.L_idx[0][i], self.L_idx[1][i]] = np.exp(guess[i + 1]) 
-            else: # no transform on off-diagonals
+        if True:
+            # no transforms on L at all
+            for i in range(0, self.L_idx[0].shape[0]):
                 self.L[self.L_idx[0][i], self.L_idx[1][i]] = guess[i + 1] 
+        else:
+            # transform L carefully so that diagonals are positive
+            for i in range(0, self.L_idx[0].shape[0]):
+                if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
+                    self.L[self.L_idx[0][i], self.L_idx[1][i]] = np.exp(guess[i + 1]) 
+                else: # no transform on off-diagonals
+                    self.L[self.L_idx[0][i], self.L_idx[1][i]] = guess[i + 1] 
+
         #self.L[self.L_idx] = guess[1:-self.y.shape[1]]
 
         #print("L:", self.L)
@@ -212,14 +223,16 @@ class AbstractModel(ABC):
 
         #print("guess:", guess)
         self.HP_from_guess(guess)
+        #print(self.L); input()
+
+        # calculate spectral density
+        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) ) # self.HP is just the lengthscale hyperparameter
 
         # set outputs and inputs
         y = self.y.T.flatten()
-        V = self.V[self.vertex]
+        V = np.sqrt(self.SD)*self.V[self.vertex] # NOTE: absorb SD(eigenvalues) into the eigenvectors
 
-        # calculate kernel matrices
-        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
-        K = self.kernelMatrix(V, V, nugget = True) # this is the full kernel A \kron K(x,x')
+        # create inverse of A \kron K_spatial; L_TMP is the cholesky of matrix Z needed for an efficient inverse
         L_TMP = self.make_invSigma() # NOTE: L_TMP is the Cholesky of the small inverse needed for efficient invSigma calculation
         invK = self.invSigma
         invK_y = invK.dot(y)
@@ -228,13 +241,14 @@ class AbstractModel(ABC):
         # calculating log | K |
         # ---------------------
 
-        # explicit calculation of logDetK 
+        # NOTE: full matrix "K", actually Sigma := A \kron K(x,x'), not used in LLH routine, just used here for checking logDetK
+        #K = self.kernelMatrix(V, V, nugget = True) # this is the full kernel Sigma := A \kron K(x,x'), although it's called 'K'
         #L_test = linalg.cho_factor(K)        
         #logDetK = 2.0*np.sum(np.log(np.diag(L_test[0])))        
         #print("logDetK:", logDetK)
 
         # calculate logDetK with the expression I derived
-        logDetK = 2*np.sum(np.log(np.diag(L_TMP[0]))) + self.y.shape[1]*np.sum(np.log(self.SD)) + self.y.shape[0]*np.sum(np.log(self.D))
+        logDetK = 2*np.sum(np.log(np.diag(L_TMP[0]))) + self.y.shape[0]*np.sum(np.log(self.D))
         #print("logDetK:", logDetK)
 
         # calculate loglikelihood
@@ -269,15 +283,49 @@ class AbstractModel(ABC):
         dguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
         hdr = hdr + " len " + " | " 
 
-        # multi-output covariance guesses; flattened values such that self.L[self.L_idx] filled by sguess
-        # FIXME: there are conditions on what values L may take, I think...
-        for i in range(0, self.L_idx[0].shape[0]):
-            if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
-                sg = np.random.uniform(np.log(1), np.log(10), size = restarts).reshape([1,-1]).T
-            else: # no transform on off-diagonals
+
+        # new attempt, without any transformation of L at all... just in case!
+        if True:
+            for i in range(0, self.L_idx[0].shape[0]):
                 sg = np.random.uniform(-5.0, 5.0, size = restarts).reshape([1,-1]).T
-            sguess = sg if i == 0 else np.hstack([sguess, sg])
-            hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
+                sguess = sg if i == 0 else np.hstack([sguess, sg])
+                hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
+            print("L guesses original:", sguess)
+
+        else:
+            if True: # old, random for L
+                # multi-output covariance guesses; flattened values such that self.L[self.L_idx] filled by sguess
+                # NOTE: IS THIS CORRECT? CERTAINLY FOR A = L.dot(L^T), WE WANT CONDITIONS ON A IDEALLY, BUT HOW DOES THAT TRANSLATE TO L PROPERLY?
+                for i in range(0, self.L_idx[0].shape[0]):
+                    if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform on diagonals
+                        sg = np.random.uniform(np.log(1), np.log(10), size = restarts).reshape([1,-1]).T
+                    else: # no transform on off-diagonals
+                        sg = np.random.uniform(-5.0, 5.0, size = restarts).reshape([1,-1]).T
+                    sguess = sg if i == 0 else np.hstack([sguess, sg])
+                    hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
+                print("L guesses original:", sguess)
+
+            else: # try to create an initial sensible estimate for these values; this does not really give good results
+                # multi-output covariance guesses; flattened values such that self.L[self.L_idx] filled by sguess
+        
+                YCORR = np.cov(self.y.T)
+                print(YCORR)
+                L = linalg.cholesky(YCORR, lower = True)
+                print(L)
+                L_lower = L[np.tril_indices(L.shape[0])]
+                print(L_lower)
+
+                for i in range(0, self.L_idx[0].shape[0]):
+                    if self.L_idx[0][i] == self.L_idx[1][i]: # exp transform will be applied on diagonals in LLH
+                        sg = np.log(L_lower[i])
+                    else: # no transform on off-diagonals
+                        sg = L_lower[i]
+                    sguess = sg if i == 0 else np.hstack([sguess, sg])
+                    hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
+                sguess = sguess[None,:] 
+                sguess = np.tile(sguess, restarts).reshape(restarts, -1)
+                #print("sguess:", sguess)
+
 
         # nugget guesses
         for i in range(0,self.y.shape[1]):
@@ -295,7 +343,8 @@ class AbstractModel(ABC):
             optFail = False
             try:
                 bestStr = "   "
-                res = minimize(self.LLH, g, method = 'Nelder-Mead') 
+                #res = minimize(self.LLH, g, method = 'Nelder-Mead') 
+                res = minimize(self.LLH, g, method = 'L-BFGS-B') 
 
                 if np.isfinite(res.fun):
                     try:
@@ -321,6 +370,9 @@ class AbstractModel(ABC):
             except TypeError as e:
                 optFail = True
 
+            except ValueError as e:
+                optFail = True
+
 
         self.HP_from_guess(bestRes.x)
         print("Optimization complete.")
@@ -343,14 +395,16 @@ class AbstractModel(ABC):
         # set outputs and inputs
         y = self.y.T.flatten()  # stack them output by outputs i.e. y = y_1(x_1) ... y_1(x_N), y_2(x_1) ... y_2(x_N) 
 
+        # calculate spectral density
+        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
+
         # recalculate self.invSigma
         self.make_invSigma()
 
         # for K** and K*
-        self.SD = self.spectralDensity( self.HP, np.sqrt(self.Q) )
-        V = self.V[self.vertex]
-        Vpred = self.V[0:self.X.shape[0]]
-        cross_cov = self.kernelMatrix(Vpred, V) # NOTE: I am predicting at vertices only, for time being
+        V = np.sqrt(self.SD)*self.V[self.vertex]
+        Vpred = np.sqrt(self.SD)*self.V[0:self.X.shape[0]] # NOTE: I am predicting at vertices only, for time being
+        cross_cov = self.kernelMatrix(Vpred, V)
 
         # mean function
         postmean = cross_cov.dot( self.invSigma.dot(y) )
@@ -435,13 +489,13 @@ class Matern(AbstractModel):
         # create A from L
         A = self.L.dot(self.L.T)
 
-        # create K(X,X) = PHI * SD * PHI.T
-        SD = self.SD
-        K = a.dot((b*SD).T)
+        # create K(X,X) = PHI * PHI.T (as sqrt(SD) absorbed into Phi)
+        K = a.dot(b.T)
 
         # create Sigma matrix
         Sigma = kron(A, K)
         
+        # FIXME: NOISE
         if nugget == True: 
             N = K.shape[0]
             Delta = np.diag(np.repeat(self.D, N))
@@ -454,25 +508,44 @@ class Matern(AbstractModel):
 
 
     def make_invSigma(self):
-        """Inverse of Sigma, taking advantage of reduced-rank formulation of K"""
+        """ Inverse of Sigma, taking advantage of reduced-rank formulation of K.
+        
+            Sigma := A \kron K + Delta, with K = V.V^T (sqrt(SD) absorbed into V in advance)
+        """
 
+        # NOTE: may be more efficient to avoid formation of invD
+
+        # FIXME: NOISE
         # get inv(D \kron I_N)
         N = self.vertex.shape[0]
-        inv_delta = np.diag(np.repeat(1.0/self.D, N))
+        #inv_delta = np.diag(np.repeat(1.0/self.D, N))
+        inv_delta = np.repeat(1.0/self.D, N) # NOTE: changed
         
         # define B: L \kron PHI
-        V = self.V[self.vertex]
+        V = np.sqrt(self.SD)*self.V[self.vertex]
         B = kron(self.L, V)
 
         # parts of inverse expression
-        SD = self.SD
-        tmp_1 = np.diag(np.tile(1.0/SD, self.y.shape[1]))
-        tmp_2 = inv_delta.dot(B)
+        #tmp_1 = np.diag(np.tile(1.0/SD, self.y.shape[1]))
+        #tmp_2 = np.diag(inv_delta).dot(B) # old way, but since inv_delta flat above, i put the np.diag in here
+        tmp_2 = inv_delta[:,None]*B # NOTE: changed
+
         tmp_3 = B.T.dot(tmp_2)
 
         # now calculate the inverse - use Cholesky because I'll need it later
-        L_TMP = linalg.cho_factor(tmp_1 + tmp_3)
-        self.invSigma = inv_delta - ( tmp_2 ).dot( linalg.cho_solve(L_TMP, tmp_2.T) )
+        #ONES = np.eye(V.shape[1] * self.y.shape[1])
+        #L_TMP = linalg.cho_factor(ONES + tmp_3) # NOTE: formerly tmp_1 + tmp_3 before SD absorption
+        np.fill_diagonal(tmp_3, tmp_3.diagonal() + 1.0)
+        L_TMP = linalg.cho_factor(tmp_3) # NOTE: formerly tmp_1 + tmp_3 before SD absorption
+
+
+        # FIXME: this will be wrong until I change inv_delta again
+        #self.invSigma_old = np.diag(inv_delta) - ( tmp_2 ).dot( linalg.cho_solve(L_TMP, tmp_2.T) ) # old way, but since inv_delta flat above, i put the np.diag in here
+        self.invSigma = - ( tmp_2 ).dot( linalg.cho_solve(L_TMP, tmp_2.T) )
+        np.fill_diagonal(self.invSigma, self.invSigma.diagonal() + inv_delta)
+
+        #print(self.invSigma_old, "\n", self.invSigma)
+        #print("close?", np.allclose(self.invSigma_old, self.invSigma))
 
         # check against explicit invere
         #explicit_invSigma = np.linalg.inv(self.Sigma)
@@ -503,7 +576,7 @@ class Matern(AbstractModel):
         return result
 
 
-    def setMeanFunction(self, smooth = 10.0):
+    def setMeanFunction(self):
         """Set mean function."""
         self.meanFunction = np.array([0])
 #}}}

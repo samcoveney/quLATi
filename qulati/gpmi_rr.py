@@ -243,19 +243,34 @@ class AbstractModel(ABC):
             Q = E + F.dot(G).dot(H)
             invQ = np.linalg.inv(Q)
 
-            # Woodbury inverse
+            # Woodbury inverse with SD absorbed
             invE = np.linalg.inv(E)
             Z = np.linalg.inv(G) + H.dot(invE).dot(F)
             invZ = np.linalg.inv(Z)
             #invQ_wb = invE - invE.dot(F).dot(invZ).dot(H).dot(invE)
             invQ_wb = invE - (invE.dot(F)).dot(invZ).dot(H.dot(invE))
-
             print("close?", np.allclose(invQ, invQ_wb))
+            print("difference:", invQ - invQ_wb)
+            input("waiting...")
+
+            # Woodbury inverse with SD not absorbed...
+            E = np.diag(D)
+            invE = np.linalg.inv(E)
+            F = self.V[self.vertex]
+            H = F.T
+            G = np.diag(SD)
+            invG = np.diag(1.0/SD)
+            Z = invG + H.dot(invE).dot(F)
+            invZ = np.linalg.inv(Z)
+            #invQ_wb = invE - invE.dot(F).dot(invZ).dot(H).dot(invE)
+            invQ_wb = invE - (invE.dot(F)).dot(invZ).dot(H.dot(invE))
+            print("close?", np.allclose(invQ, invQ_wb))
+            print("difference:", invQ - invQ_wb)
             input("waiting...")
 
         #}}} ######
 
-        if True:
+        try:
 
             # attempt cholesky factorization
             # ------------------------------
@@ -300,9 +315,6 @@ class AbstractModel(ABC):
                 print("llh_old:", llh_old)
                 print("--------------")
             #}}} ###### 
-
-        try: # more stable
-            pass
 
         # NOTE: version which avoids Cholesky not implemented yet
 

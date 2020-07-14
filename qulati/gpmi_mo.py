@@ -204,7 +204,10 @@ class AbstractModel(ABC):
         #print("L:", self.L)
         #print("A:", self.L.dot(self.L.T))
 
-        self.D = np.exp(guess[-self.y.shape[1]:])
+        if self.nugget_train:
+            self.D = np.exp(guess[-self.y.shape[1]:])
+        #else:
+        #    self.D = self.nugget
 
         return
     #}}}
@@ -258,11 +261,13 @@ class AbstractModel(ABC):
     #}}}
 
     #{{{ optimize the hyperparameters
-    def optimize(self, restarts, zero_off_diagonals = False):
+    def optimize(self, restarts, nugget = None, zero_off_diagonals = False):
         """Optimize the hyperparameters.
         
            Arguments:
+           nugget -- value of the nugget, if None then train nugget, if array then fix nugget
            restart -- how many times to restart the optimizer.
+           zero_off_diagonals -- initial guesses for off diagonals of L (where A = LL^T) are zero (off diagonals are not fixed to zero though)
 
            NOTES:
            * initial guesses are picked at random from predefined ranges set in this function
@@ -281,6 +286,7 @@ class AbstractModel(ABC):
         hdr = hdr + " len " + " | "
 
         # between-outputs-correlation guess
+        # ---------------------------------
         for i in range(0, self.L_idx[0].shape[0]):
             if zero_off_diagonals == True:
                 if self.L_idx[0][i] == self.L_idx[1][i]: # diagonals
@@ -293,13 +299,30 @@ class AbstractModel(ABC):
             hdr = hdr + " L{:d}{:d} ".format(self.L_idx[0][i], self.L_idx[1][i]) + " | "
         print("L guesses:\n", sguess)
 
-        # nugget guesses
-        for i in range(0,self.y.shape[1]):
-            ng = np.random.uniform(np.log(0.1), np.log(1.0), size = restarts).reshape([1,-1]).T
-            nguess = ng if i == 0 else np.hstack([nguess, ng])
-            hdr = hdr + " nu{:d} ".format(i) + " | "
+        # nugget options
+        # --------------
 
-        guess = np.hstack([dguess, sguess, nguess])
+        if nugget is None:  # nugget not supplied; we must train on nugget
+            self.nugget_train = True
+
+            # nugget guesses
+            for i in range(0,self.y.shape[1]):
+                ng = np.random.uniform(np.log(0.1), np.log(1.0), size = restarts).reshape([1,-1]).T
+                nguess = ng if i == 0 else np.hstack([nguess, ng])
+                hdr = hdr + " nu{:d} ".format(i) + " | "
+
+            guess = np.hstack([dguess, sguess, nguess])
+
+        else:
+            self.nugget_train = False
+
+            #self.nugget = np.abs(nugget)
+            self.D = np.abs(nugget)
+
+            hdr = hdr + " (fixed nuggets) "
+
+            guess = np.hstack([dguess, sguess])
+
 
         # minimimize LLH
         # --------------

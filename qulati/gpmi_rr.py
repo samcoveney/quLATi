@@ -360,15 +360,13 @@ class AbstractModel(ABC):
         guess = np.hstack([dguess, sguess])
 
         # nugget
-        self.nugget = nugget
-
         if nugget is None:  # nugget not supplied; we must train on nugget
             self.nugget_train = True
             guess = np.hstack([guess, nguess])
             self.nugget_index = guess.shape[1] - 1
             hdr = hdr + " nug " + " | " 
         else:
-            nugget = np.abs(nugget)
+            self.nugget = np.abs(nugget)
             self.nugget_train = False
 
         # run optimization code

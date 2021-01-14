@@ -258,6 +258,9 @@ def eigensolver(X, Tri, holes, num = 2**8, layers = 10, calc_gradV = True, use_a
     # 1. extend the mesh
     # ------------------
     X, Tri, edges, centroids = extendMesh(X, Tri, layers, holes, use_average_edge = use_average_edge)
+    #np.save("/tmp/X.npy", X)
+    #np.save("/tmp/Tri.npy", Tri)
+    #input("waiting after saving extended mesh to /tmp")
     extended_num_verts = X.shape[0] # save number of vertices of extended mesh
 
     # 2. subdivide the mesh

@@ -19,7 +19,7 @@ import trimesh
 def gradient(X, Tri, scalar, magnitude_stats = False):
     '''Calculate gradient of scalar field on every mesh face for all scaler fields (at vertices) provided.
 
-       For N-vertex F-face mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields to get (F x n) array result.
+       For N-vertex F-face mesh, scalar can be (N x m) array, so calculation is performed for m different scaler fields to get (F x m) array result.
     '''
 
     # trimesh object

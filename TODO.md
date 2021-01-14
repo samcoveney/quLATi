@@ -1,15 +1,18 @@
 # TODO
 
 
-## Multi-output moodel with heteroscedastic noise
+## gpmi_mo models
 
-1) allow nuggets to be fixed for gpmi_mo models
-2) allow heteroscedastic observation noise for gpmi_mo models
+Multi-output GP model using reduced-rank formulation
 
-Supplying _correlated_ heteroscedastic observation noise (i.e. non-diagonal noise matrix) should work in theory, as the Woodbury inversion formula should still apply. However, it may cause numerically difficulties.
+* [X] allow nuggets to be fixed for gpmi_mo models
+* [X] allow heteroscedastic observation noise for gpmi_mo models
+* [ ] allow multivariate observation noise (non-trainable) for gpmi_mo models
 
 
-## Between-outputs correlations
+## gpmi_umo models
 
-For training the gpmi_mo model, it may be sensible to supply an initial guess for the between-outputs correlation coefficients. This guess could be derived from the correlation matrix of the observed outputs.
+Uncorrelated multi-output GP model with multivariate observation noise
+
+* [ ] write this model
 

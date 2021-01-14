@@ -13,8 +13,6 @@
 
    These models are less flexible; auxillary inputs cannot be supplied.
 
-   At present heteroscedastic noise and gradient observations cannot be supplied.
-
 
    Created: 07-Apr-2020
    Author:  Sam Coveney
@@ -290,7 +288,13 @@ class AbstractModel(ABC):
             tmp = V.T.dot(invD*y)
             #yQy = y.dot(invD*y) - (tmp.T).dot( linalg.cho_solve(L, tmp) )
             # NOTE: trying cholesky instead of cho_solve
-            tmp = (tmp.T).dot( linalg.solve_triangular(L.T, linalg.solve_triangular(L, tmp, lower = True)) )
+
+            # what was in the code originally
+            #tmp = (tmp.T).dot( linalg.solve_triangular(L.T, linalg.solve_triangular(L, tmp, lower = True)) )
+            # new, which really should be the same
+            tmp = linalg.solve_triangular(L, tmp, lower = True)
+            tmp = tmp.T.dot(tmp)
+
             yQy = y.dot(invD*y) - tmp
 
             # LLH = 1/2 log|Q| + 1/2 y^T Q^-1 y + n/2 log(2 pi)
@@ -354,7 +358,7 @@ class AbstractModel(ABC):
         # initial guesses for hyperparameters
         dguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
         sguess = np.random.uniform(np.log(10), np.log(100), size = restarts).reshape([1,-1]).T
-        nguess = np.random.uniform(np.log(1e-3), np.log(1e-2), size = restarts).reshape([1,-1]).T
+        nguess = np.random.uniform(np.log(1e-3), np.log(1e-1), size = restarts).reshape([1,-1]).T
 
         hdr = "Restart | " + " len " + " | " + " var " + " | "
         guess = np.hstack([dguess, sguess])
@@ -407,7 +411,7 @@ class AbstractModel(ABC):
 
     #}}}
 
-    #{{{ posterior distribution, old version with no specified heteroscedastic observation noise
+    #{{{ posterior distribution
     def posterior(self, indices = None, pointwise = True):
         """Calculates GP posterior mean and variance and returns *total* posterior mean and square root of pointwise variance
 
@@ -488,27 +492,32 @@ class AbstractModel(ABC):
         
         """
 
-        if self.post_var == None or self.post_mean == None:
+        if self.post_var is None or self.post_mean is None:
             print("[ERROR]: need to call posterior first, and succeed in saving full posterior covariance.")
 
+        if self.post_var.ndim != 2:
+            print("[ERROR]: require full posterior variance to calculate samples")
+
         print("Calculating {:d} samples from posterior distribution...".format(num))
+
+        print("WARNING: vertices only, not centroids.")
+        N = self.X.shape[0]
+        PM, PV = self.post_mean[0:N].copy(), self.post_var[0:N][:,0:N].copy()
 
         nugget = 1e-10
         while True:
             try:
                 print("  (adding nugget {:1.0e} to posterior var diagonal for stability)".format(nugget))
-                np.fill_diagonal(self.post_var, np.diag(self.post_var) + nugget)
+                np.fill_diagonal(PV, np.diag(PV) + nugget)
                 #print("  Cholesky decomp")
-                L = np.linalg.cholesky(self.post_var)
+                L = np.linalg.cholesky(PV)
                 break
             except:
                 nugget = nugget * 10
         
-        N = self.post_mean.shape[0]
-
         #print("Calculate samples")
         u = np.random.randn(N, num)
-        samples = self.post_mean[:,None] + L.dot(u)
+        samples = PM[:,None] + L.dot(u)
 
         return self.meanFunction[:,None] + self.unscale(samples)
         
@@ -644,15 +653,17 @@ class AbstractModel(ABC):
 
                 #{{{ histogram of magnitudes
                 if False:
+                    # NOTE: adapted for CV
 
-                    plt.hist(mag_grad, bins = 30);
+                    plt.hist(1.0/mag_grad, bins = 30);
                     #plt.hist(mag_grad_chol, bins = 30, color = "red");
                     #plt.hist(mag_grad_eigh, bins = 30, color = "green");
-                    for pi in p:
-                        plt.axvline(pi, color = "pink")
-                    plt.axvline(m, color = "red")
-                    plt.axvline(m + 2*s, color = "red", linestyle = "--")
-                    plt.axvline(m - 2*s, color = "red", linestyle = "--")
+                    #for pi in p:
+                    #    plt.axvline(pi, color = "pink")
+                    plt.axvline(1.0/m, color = "red")
+                    plt.axvline(1.0/np.linalg.norm(self.unscale(mean, std = True)), color = "green") # CV as calculated from posterior mean of gradLAT
+                    #plt.axvline(m + 2*s, color = "red", linestyle = "--")
+                    #plt.axvline(m - 2*s, color = "red", linestyle = "--")
                     plt.show()
                 #}}}
 
@@ -679,6 +690,8 @@ class Matern(AbstractModel):
         
            w: sqrt(eigenvalues)
            rho: lengthscale parameter
+
+           # FIXME: there are several terms here that could be precalculated, as done in gpmi_mo
 
         """
         

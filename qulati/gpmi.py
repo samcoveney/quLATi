@@ -129,7 +129,6 @@ class AbstractModel(ABC):
 
            NOTES:
            * values for hyperparameters for training are supplied as log(HP) to the loglikelihood function
-           * currently using Newton-CG method needing LLH gradients, hopefully these LLH gradients wrt log(HP) are correct...
            * initial guesses are picked at random from predefined ranges set in this function
         
         """
@@ -205,18 +204,10 @@ class AbstractModel(ABC):
 
     #{{{ posterior distribution
     def posterior(self, indices = None, pointwise = True):
-        """Calculates GP posterior mean and variance and returns *total* posterior mean and square root of pointwise variance
-
-           NOTES:
-           * the returned *total* posterior mean is the sum of the GP posterior mean and the mean function
-
-        """
-
-        # FIXME: Need to implement a way to calculate the posterior for a subset of vertices (usefully, for first self.X.shape[0] positions i.e. vertices)
-        #        This is because we will want to take posterior samples, and so need the full posterior covariance
+        """Calculates GP posterior mean and variance and returns *total* posterior mean and square root of pointwise variance."""
 
         # spectral density
-        SD = self.spectralDensity( self.HP[0] ) # NOTE: multiply SD by signal variance
+        SD = self.spectralDensity( self.HP[0] )
         SD = self.HP[1] * SD
 
         # set outputs and inputs
@@ -253,7 +244,6 @@ class AbstractModel(ABC):
 
         except MemoryError as me:
             print("[MEMORY ERROR]: cannot store such a big posterior covariance matrix! Try 'indices' or 'pointwise' arguments to this function.")
-
             print("[WARNING]: setting posterior variance as None.")
             Vf = None
             self.post_var = Vf
@@ -277,12 +267,7 @@ class AbstractModel(ABC):
 
     #{{{ posterior samples
     def posteriorSamples(self, num, nugget = 1e-10):
-        """Returns posterior samples from the whole model (samples from the posterior + mean function)
-        
-        Arguments:
-        num -- how many posterior samples to calculate
-        
-        """
+        """Returns posterior samples"""
 
         if self.post_var is None or self.post_mean is None:
             print("[ERROR]: need to call posterior first, and succeed in saving full posterior covariance.")
@@ -316,10 +301,9 @@ class AbstractModel(ABC):
 
     #{{{ posterior distribution of gradient
     def posteriorGradient(self):
-        """Calculates GP posterior mean and variance *of gradient* and returns posterior mean and square root of pointwise variance
+        """Calculates GP posterior mean and variance *of gradient* and returns posterior mean
         
            NOTES:
-           * the returned *total* posterior mean *of gradient* is the sum of the GP posterior mean of gradient and the mean function gradient
            * the GP posterior variance *of gradient* is only calculated pointwise, giving a 3x3 matrix at every centroid
 
         """
@@ -327,7 +311,7 @@ class AbstractModel(ABC):
         print("Calculating posterior distribution of gradient...")
 
         # spectral density
-        SD = self.spectralDensity( self.HP[0] ) # NOTE: multiply SD by signal variance
+        SD = self.spectralDensity( self.HP[0] )
         SD = self.HP[1] * SD
 
         # set outputs and inputs
@@ -373,7 +357,7 @@ class AbstractModel(ABC):
         print("Calculating posterior distribution gradient magnitudes... (a bit slow...)")
         print("  (statistics: mean, stdev, 9th, 25th, 50th, 75th, 91st percentiles)")
         
-        mag_stats = np.empty([len(idx), 7])
+        mag_stats = np.zeros([len(idx), 7])
 
         if self.grad_post_mean is not None and self.grad_post_var is not None:
 
@@ -401,7 +385,7 @@ class AbstractModel(ABC):
 
 #{{{ Matern kernel
 class Matern(AbstractModel):
-    """Model y = GP(x) + e where GP(x) is a manifold GP with Matern kernel."""       
+    """Matern kernel."""
 
     def kernelSetup(self, smoothness):
         """Pre calculations for Matern kernel."""
@@ -410,7 +394,7 @@ class Matern(AbstractModel):
 
         D = 2  # dimension
         self.const1 = (2**D * np.pi**(D/2) * gamma(self.smoothness + (D/2)) * (2*self.smoothness)**self.smoothness) / gamma(self.smoothness)
-        self.const2 = 4*(np.pi**2)*(self.Q) # Q replaces w**2 where w = sqrt(q)
+        self.const2 = 4*(np.pi**2)*(self.Q) # Q replaces w**2 where w = sqrt(Q)
         self.const3 = -(self.smoothness + (D/2))
 
 
@@ -421,6 +405,25 @@ class Matern(AbstractModel):
         result = (self.const1/rho**(2*self.smoothness)) * beta**self.const3
 
         return result
-
 #}}}
+
+
+#{{{ RBF kernel
+class RBF(AbstractModel):
+    """RBF kernel."""
+
+    def kernelSetup(self):
+        """Pre calculations for RBF kernel"""
+        pass
+
+
+    def spectralDensity(self, rho):
+        """Spectral Density for RBF kernel."""
+
+        result = (2.0 * np.pi * rho**2) * np.exp( (-2 * np.pi**2 * rho**2) * self.Q ) # Q replaces w**2 where w = sqrt(Q)
+
+        return result
+#}}}
+
+
 

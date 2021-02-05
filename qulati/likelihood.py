@@ -1,9 +1,9 @@
+"""Likelihood, non-JAX."""
 
 import numpy as np
 from scipy import linalg
 
 #{{{ negative loglikelihood
-#@partial(jit, static_argnums=(0, 2))
 def LLH(self, guess, fixed_nugget):
     """Return the negative loglikelihood.
     
@@ -22,7 +22,7 @@ def LLH(self, guess, fixed_nugget):
         nugget = fixed_nugget
 
     # spectral density
-    SD = self.spectralDensity( HP[0] ) # NOTE: multiply SD by signal variance
+    SD = self.spectralDensity( HP[0] )
     SD = HP[1] * SD
 
     # set outputs and inputs

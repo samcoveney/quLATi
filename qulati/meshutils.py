@@ -200,7 +200,8 @@ def subset_anneal(X, Tri, num, runs, choice = None):
         choice = np.arange(X.shape[0])
         np.random.shuffle(choice)
         choice = choice[0:num]
-        print("choice.shape:", choice.shape)
+        #print("choice.shape:", choice.shape)
+        #print("choice type:", choice.dtype) # <------------------- HERE
 
     points = X[choice]
     dists = pdist(points)
@@ -215,7 +216,8 @@ def subset_anneal(X, Tri, num, runs, choice = None):
         choice_ind = np.random.choice(choice.shape[0], size = 1)
 
         # which vertices neighbour the current point at choice[choice_ind]?
-        neigh = mesh.vertex_neighbors[choice[choice_ind]][0] 
+        #neigh = mesh.vertex_neighbors[choice[choice_ind]][0]  # old indexing, when mesh.vertex_neighbours returned an array with a list in it i.e. [list(a,b,c)]
+        neigh = mesh.vertex_neighbors[choice[choice_ind][0]]   # new indexing, when mesh.vertex_neighours returns [a,b,c]
 
         # choose a random neighbour
         neigh_ind = np.random.choice(len(neigh), size = 1)[0]

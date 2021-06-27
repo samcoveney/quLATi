@@ -4,7 +4,7 @@ This package is for *Quantifying Uncertainty for Local Activation Time Interpola
 
 [![DOI](https://zenodo.org/badge/239559025.svg)](https://zenodo.org/badge/latestdoi/239559025)
 
-It implements *Gaussian Process Manifold Interpolation (GPMI)* for doing Gaussian process regression on a manifold represented by a triangle mesh.
+It implements *Gaussian Process Manifold Interpolation (GPMI)* for doing Gaussian process regression on a manifold represented by a triangle mesh. See the paper [Gaussian process manifold interpolation for probabilistic atrial activation maps and uncertain conduction velocity](https://royalsocietypublishing.org/doi/pdf/10.1098/rsta.2019.0345)
 
 Since the code is focussed on GP regression on atrial meshes, the eigenfunction calculation routine makes use of specialized algorithms for mesh extension, subdivision, and gradient calculations. These could easily be modified for other use cases.
 
@@ -45,7 +45,7 @@ The workflow for using quLATi is:
 * optimize the hyperparameters
 * make predictions
 
-The atrial mesh must be defined by numpy arrays X (vertices/nodes) and Tri (triangles/faces, indexed from zero). The mesh must be manifold.
+The atrial mesh must be defined by numpy arrays X (vertices/nodes) and Tri (triangles/faces, indexed from zero). The mesh must be manifold. (It may be desirable to create a new mesh - see the end of this README file for some useful routines).
 
 ```python
 from qulati import gpmi, eigensolver
@@ -70,6 +70,9 @@ model = gpmi.Matern(X, Tri, Q, V, gradV, JAX = False)
 ```
 
 If using `JAX = True` then optimization uses gradients of the loglikelihood, which are calculated using the JAX library (a soft dependency for quLATi).
+
+NOTE: A fairly recent issue in JAX (which may now be solved) may cause issues, solveable by installing an earlier version of JAX. See here: https://github.com/google-research/long-range-arena/issues/7
+
 
 ### Set the data
 
@@ -119,7 +122,7 @@ pred_mean, pred_stdev = model.posterior(indices = range(X.shape[0]), pointwise =
 If `pointwise = False` is used, then the full posterior covariance is calculated and stored (not returned from this function). Then `num` posterior samples can be generated using:
 
 ```python
-samples = posteriorSamples(self, num, nugget = 1e-10)
+samples = model.posteriorSamples(num, nugget = 1e-10)
 ```
 
 where `nugget` is used to stabilize calculations with the posterior variance matrix (in other words, it is not used to simulate noisy observations).
@@ -141,4 +144,36 @@ mag_stats = model.gradientStatistics()
 #mag_stats = model.gradientStatistics(centroid_index)
 ```
 
+
+## Remeshing
+
+quLATi also has some useful remeshing utilities, designed to create a lower resolution mesh from a higher resolution mesh.
+
+Use simulated annealing to choose a subset of well-spaced mesh vertices, and then triangulate these new points.
+
+```python
+from qulati.meshutils import subset_anneal, subset_triangulate, extendMesh
+
+# simulated annealing (suggestion: continue until low percentage of successful new moves)
+NUM = 2000
+RUNS = 25000
+
+cont = True
+first_run = True
+while cont:
+
+    if first_run:
+        choice = subset_anneal(X, Tri, num = NUM, runs = RUNS)
+        first_run = False
+    else:
+        choice = subset_anneal(X, Tri, num = NUM, runs = RUNS, choice = choice)
+
+    inp = input("Type Y or y to do more annealing: ")
+    if (inp != "Y") and (inp != "y"):
+        cont = False
+        
+# create triangulation with new points (note: mesh extension helps remeshing)
+newX, newTri = subset_triangulate(X, Tri, choice, layers = 5, holes = 5)
+
+```
 

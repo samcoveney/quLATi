@@ -14,7 +14,8 @@ setup(name = 'qulati',
           'matplotlib',
           'future',
           'numba',
-          'trimesh'
+          'trimesh',
+          'networkx'
       ],
       zip_safe = False)
 

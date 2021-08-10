@@ -381,7 +381,9 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
     # remove faces so that max faces per edge is 2
     # --------------------------------------------
     # loop over this structure until no offending triangles, then break
+    print("Removing offending vertices... (should be rapid, else stuck in while loop)")
     while True:
+
         mesh = trimesh.Trimesh(vertices = X[choice], faces = face_list, process = False)
         edges = mesh.edges_unique
         unique, counts = np.unique(mesh.faces_unique_edges, return_counts = True)
@@ -400,11 +402,48 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
             # pick the first one, and remove triangles containing it
             defo_bad_face = (np.isin(face_list, ttt[0]).sum(axis = 1) == 2 )
         except:
+
             # handle the case of single triangles over 3 other triangles
             defo_bad_face = np.all(np.isin(face_list, args), axis = 1)
 
-        #print("bad faces")
+            # cases on edge not capture by the 'try' above
+            if np.all(defo_bad_face == False):
+                other_bad_face = (np.isin(face_list, args).sum(axis = 1) == 2)
+                #print("other bad face 1:")
+                #print(face_list[other_bad_face])
+
+                # pick any one of these, and keep trianles sharing an edge with that one
+                tmp = (np.isin(face_list[other_bad_face], face_list[other_bad_face][0]).sum(axis = 1) >= 2)
+                tmp = face_list[other_bad_face][tmp]
+                #print("other bad face 2:")
+                #print(tmp)
+
+                #tmp_SAVE = tmp
+                #break
+
+                # get the two triangles with a unique edge
+                args2 = np.unique(edges[unique[(counts == 1)]]) # indices of mesh-edge vertices
+                index = np.all(np.isin(tmp, args2), axis = 1) #.sum(axis = 1) == 2) # I don't know why np.isin gives true across all columns
+                #print("index:")
+                #print(index)
+
+                #print("tmp[index]:")
+                #print(tmp[index]) # these triangles are the offenders
+
+                # delete one of the offending points
+                defo_bad_face = np.all(np.isin(face_list, tmp[index][0]), axis = 1) # index into face_list of one of the offending triangles
+                #print("defo_bad_face")
+                #print(defo_bad_face)
+
+                #input("waiting")
+
+
+        #print("# defo_bad_face:", defo_bad_face.sum())
+        #print(defo_bad_face)
+        #print("bad faces:")
         #print(face_list[defo_bad_face])
+        #input()
+        #if np.all(defo_bad_face == False): break
 
         face_list = face_list[~defo_bad_face]
 
@@ -439,7 +478,7 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
     trimesh_obj.fix_normals()
 
     # return the faces
-    return X[choice], trimesh_obj.faces, closest_c[0:original_N]
+    return X[choice], trimesh_obj.faces #, tmp_SAVE #, closest_c[0:original_N]
 #}}}
 
 

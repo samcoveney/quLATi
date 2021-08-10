@@ -1,6 +1,7 @@
 import numpy as np
 from scipy.spatial.distance import pdist, cdist, squareform
 import random
+#from multiprocessing import Process, Queue
 
 import trimesh
 
@@ -174,6 +175,30 @@ def extendMesh(X, Tri, layers, holes, use_average_edge = False):
 #}}}
 
 
+# calculate energy
+#def calc_energy(q, X, points, neigh, neigh_ind, choice_ind, POWER):
+def calc_energy(X, points, neigh, neigh_ind, choice_ind, POWER):
+    """Calculate the energy needed for simulated annealing"""
+
+    #np.seterr(divide='ignore', invalid='ignore')
+
+    # calculate distances between all points and the point in question
+    old_dists = cdist(points[choice_ind], points)[0] #  at initial position
+    new_dists = cdist(X[neigh[neigh_ind]][None,:], points)[0] # at suggested new location
+
+    # calculate the energy as sum of squared inverse distances
+    # (ignore distance between the point and itself (which is zero) when calculating the energy)
+    old_energy = (1.0 / old_dists[:choice_ind[0]]**POWER).sum() + (1.0 / old_dists[choice_ind[0]+1:]**POWER).sum()
+    new_energy = (1.0 / new_dists[:choice_ind[0]]**POWER).sum() + (1.0 / new_dists[choice_ind[0]+1:]**POWER).sum()
+
+    del old_dists
+    del new_dists
+
+    #q.put([old_energy, new_energy])
+
+    return old_energy, new_energy
+
+
 #{{{ anneal positions of a subset of mesh vertices, optimizing for even spatial distribution
 def subset_anneal(X, Tri, num, runs, choice = None):
     """ Use simulated annealing to distribute vertex points over a manifold.
@@ -187,6 +212,8 @@ def subset_anneal(X, Tri, num, runs, choice = None):
     """
 
     print("Optimizing inducing point positions with simulated annealing...")
+
+    #np.seterr(divide='ignore', invalid='ignore')
 
     # trimesh object
     mesh = trimesh.Trimesh(vertices = X, faces = Tri, process = False)
@@ -207,6 +234,7 @@ def subset_anneal(X, Tri, num, runs, choice = None):
     dists = pdist(points)
     POWER = 2 # power to which inverse distance is raised; 2 seems to be a good choice
     best_cost = ((1.0 / dists)**POWER).sum() # sum for energy
+    del dists
 
     # run the simulated annealing routine
     count = 0
@@ -222,14 +250,14 @@ def subset_anneal(X, Tri, num, runs, choice = None):
         # choose a random neighbour
         neigh_ind = np.random.choice(len(neigh), size = 1)[0]
 
-        # calculate distances between all points and the point in question
-        old_dists = cdist(points[choice_ind], points)[0] #  at initial position
-        new_dists = cdist(X[neigh[neigh_ind]][None,:], points)[0] # at suggested new location
+        # use subprocess to prevent memory usage increasing
+#        queue = Queue()
+#        p = Process(target = calc_energy, args=(queue, X, points, neigh, neigh_ind, choice_ind, POWER))
+#        p.start()
+#        p.join() # this blocks until the process terminates
+#        [old_energy, new_energy] = queue.get()
 
-        # calculate the energy as sum of squared inverse distances
-        # (ignore distance between the point and itself (which is zero) when calculating the energy)
-        old_energy = (1.0 / old_dists[:choice_ind[0]]**POWER).sum() + (1.0 / old_dists[choice_ind[0]+1:]**POWER).sum()
-        new_energy = (1.0 / new_dists[:choice_ind[0]]**POWER).sum() + (1.0 / new_dists[choice_ind[0]+1:]**POWER).sum()
+        [old_energy, new_energy] = calc_energy(X, points, neigh, neigh_ind, choice_ind, POWER)
 
         # energy difference
         diff_energy = new_energy - old_energy
@@ -247,15 +275,15 @@ def subset_anneal(X, Tri, num, runs, choice = None):
 
             # update the best choice
             choice[choice_ind] = neigh[neigh_ind]
-            points = X[choice]
+            points[:] = X[choice]
         
         if i % 10000 == 0:
             perc = 100*count/10000
-            print("Percentage of successful moves: {:4.1f}%".format(perc), end = "\r")
+            print("Progress {:02d}%, Percentage of successful moves: {:4.1f}%".format(int(100*i/num_designs), perc), end = "\r")
             count = 0
-            if perc < 1.0: break
-
-    print("\n")
+            if perc < 1.0:
+                print("\nBreaking at <= 1% successful moves")
+                break
 
     return choice
 #}}}
@@ -263,6 +291,8 @@ def subset_anneal(X, Tri, num, runs, choice = None):
 
 #{{{ triangulate a subset of mesh vertices into a new triangulation
 def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge = True):
+
+    original_N, original_F = X.shape[0], Tri.shape[0]
 
     if layers > 0:
         X, Tri, __, __ = extendMesh(X, Tri, layers = layers, holes = holes, use_average_edge = use_average_edge)
@@ -347,6 +377,37 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
     face_list = np.sort(face_list, axis = 1)
     face_list = np.unique(face_list, axis = 0)
 
+
+    # remove faces so that max faces per edge is 2
+    # --------------------------------------------
+    # loop over this structure until no offending triangles, then break
+    while True:
+        mesh = trimesh.Trimesh(vertices = X[choice], faces = face_list, process = False)
+        edges = mesh.edges_unique
+        unique, counts = np.unique(mesh.faces_unique_edges, return_counts = True)
+
+        args = np.unique(edges[unique[(counts > 2)]]) # offending triangles will contain all these vertices
+        #print("args:", args)
+
+        if len(args) == 0: break
+        
+        good_edges = edges[unique[(counts == 2)]]
+
+        # find the good edges that contains the offending vertices
+        ttt = good_edges[ np.all(np.isin(good_edges, args), axis = 1) ]
+
+        try:
+            # pick the first one, and remove triangles containing it
+            defo_bad_face = (np.isin(face_list, ttt[0]).sum(axis = 1) == 2 )
+        except:
+            # handle the case of single triangles over 3 other triangles
+            defo_bad_face = np.all(np.isin(face_list, args), axis = 1)
+
+        #print("bad faces")
+        #print(face_list[defo_bad_face])
+
+        face_list = face_list[~defo_bad_face]
+
     #}}}
 
 
@@ -374,15 +435,11 @@ def subset_triangulate(X, Tri, choice, layers = 0, holes = 5, use_average_edge =
 
     #}}}
 
-    # make sure no element has two edges bordering a hole
-    #Tri = fix_edges(X[choice], trimesh_obj.faces)
-    #trimesh_obj = trimesh.Trimesh(vertices = X[choice], faces = Tri, process = False)
-
     # fix the normals to be consistent
     trimesh_obj.fix_normals()
 
     # return the faces
-    return X[choice], trimesh_obj.faces
+    return X[choice], trimesh_obj.faces, closest_c[0:original_N]
 #}}}
 
 
